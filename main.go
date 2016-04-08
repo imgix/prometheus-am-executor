@@ -113,15 +113,15 @@ func timeToStr(t time.Time) string {
 
 func amDataToEnv(td *template.Data) []string {
 	env := []string{
-		"RECEIVER=" + td.Receiver,
-		"STATUS=" + td.Status,
-		"EXTERNAL_URL=" + td.ExternalURL,
-		"ALERT_LEN=" + strconv.Itoa(len(td.Alerts)),
+		"AMX_RECEIVER=" + td.Receiver,
+		"AMX_STATUS=" + td.Status,
+		"AMX_EXTERNAL_URL=" + td.ExternalURL,
+		"AMX_ALERT_LEN=" + strconv.Itoa(len(td.Alerts)),
 	}
 	for p, m := range map[string]map[string]string{
-		"LABEL":      td.CommonLabels,
-		"GLABEL":     td.GroupLabels,
-		"ANNOTATION": td.CommonAnnotations,
+		"AMX_LABEL":      td.CommonLabels,
+		"AMX_GLABEL":     td.GroupLabels,
+		"AMX_ANNOTATION": td.CommonAnnotations,
 	} {
 		for k, v := range m {
 			env = append(env, p+"_"+k+"="+v)
@@ -129,7 +129,7 @@ func amDataToEnv(td *template.Data) []string {
 	}
 
 	for i, alert := range td.Alerts {
-		key := "ALERT_" + strconv.Itoa(i)
+		key := "AMX_ALERT_" + strconv.Itoa(i+1)
 		env = append(env,
 			key+"_STATUS"+"="+alert.Status,
 			key+"_START"+"="+timeToStr(alert.StartsAt),
