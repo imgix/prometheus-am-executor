@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "$AMX_STATUS" != "firing" ]]; then
+  exit 0
+fi
+
+reboot_host() {
+  local hostname=$(echo $1 | cut -d: -f1)
+  echo "Rebooting $hostname"
+  ssh "$hostname" sudo reboot
+}
+
+main() {
+  for i in $(seq 1 "$AMX_ALERT_LEN"); do
+    ref="AMX_ALERT_${i}_LABEL_instance"
+    reboot_host "$(echo "${!ref}" | cut -d: -f1)"
+  done
+  wait
+}
+
+main "$@"
