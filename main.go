@@ -21,6 +21,7 @@ import (
 var (
 	listenAddr      = flag.String("l", ":8080", "HTTP Port to listen on")
 	command         = flag.String("c", "env", "Command to execute for each alert received")
+	verbose         = flag.Bool("v", false, "Enable verbose/debug logging")
 	processDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "am_executor",
 		Subsystem: "process",
@@ -52,12 +53,17 @@ func handleError(w http.ResponseWriter, err error) {
 }
 
 func handleWebhook(w http.ResponseWriter, req *http.Request) {
-	log.Println("got req")
+	if *verbose {
+		log.Println("Webhook triggered")
+	}
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		handleError(w, err)
 		errCounter.WithLabelValues("read")
 		return
+	}
+	if *verbose {
+		log.Println("Body:", string(data))
 	}
 	payload := &template.Data{}
 	if err := json.Unmarshal(data, payload); err != nil {
