@@ -20,7 +20,6 @@ import (
 
 var (
 	listenAddr      = flag.String("l", ":8080", "HTTP Port to listen on")
-	command         = flag.String("c", "env", "Command to execute for each alert received")
 	verbose         = flag.Bool("v", false, "Enable verbose/debug logging")
 	processDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "am_executor",
@@ -71,18 +70,20 @@ func handleWebhook(w http.ResponseWriter, req *http.Request) {
 		errCounter.WithLabelValues("unmarshal")
 	}
 	log.Printf("Got: %#v", payload)
-	if err := rnr.run(*command, amDataToEnv(payload)); err != nil {
+	if err := rnr.run(amDataToEnv(payload)); err != nil {
 		handleError(w, err)
 		errCounter.WithLabelValues("start")
 	}
 }
 
 type runner struct {
+	command   string
+	args      []string
 	processes []exec.Cmd
 }
 
-func (r *runner) run(command string, env []string) error {
-	cmd := exec.Command(command)
+func (r *runner) run(env []string) error {
+	cmd := exec.Command(r.command, r.args...)
 	cmd.Env = append(os.Environ(), env...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -95,11 +96,11 @@ func (r *runner) run(command string, env []string) error {
 	scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
 	go func() {
 		for scanner.Scan() {
-			log.Println(command+":", scanner.Text())
+			log.Println(r.command+":", scanner.Text())
 		}
 		processesCurrent.Dec()
 		if err := cmd.Wait(); err != nil {
-			log.Println("Command", command, "failed:", err)
+			log.Println("Command", r.command, " with args", r.args, "failed:", err)
 			errCounter.WithLabelValues("exit")
 		}
 	}()
@@ -158,10 +159,19 @@ func main() {
 	prometheus.MustRegister(processDuration)
 	prometheus.MustRegister(processesCurrent)
 	prometheus.MustRegister(errCounter)
-	rnr = &runner{}
 	flag.Parse()
+	command := flag.Args()
+	if len(command) == 0 {
+		log.Fatal("Require command")
+	}
+	rnr = &runner{
+		command: command[0],
+	}
+	if len(command) > 1 {
+		rnr.args = command[1:]
+	}
 	http.HandleFunc("/", handleWebhook)
 	http.Handle("/metrics", prometheus.Handler())
-	log.Println("Listening on", *listenAddr)
+	log.Println("Listening on", *listenAddr, "and running", command)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
