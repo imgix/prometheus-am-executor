@@ -5,22 +5,20 @@ example on how to use Prometheus and prometheus-am-executor to reboot a machine
 a machine based on a alert while making sure enough instances are in service
 all the time.
 
-Where in general errors are best exposed as a counter, in this specific case
-it's simpler to use a gauge since we can set that back to 0 after the reboot.
-
-Let assume the metric `host_require_reboot` should trigger a reboot if set 1.
-To make sure enough instances are in service all the time, the only reboot
-should only get triggered if at least 80% of all instances are reachable in the
-load balancer. A alerting expression would look like this:
+Let assume the counter `app_errors_unrecoverable_total` should trigger a reboot
+if increased by 1. To make sure enough instances are in service all the time,
+the reboot should only get triggered if at least 80% of all instances are
+reachable in the load balancer. A alerting expression would look like this:
 
 ```
 ALERT RebootMachine IF
-	host_require_reboot == 1 AND
+	increase(app_errors_unrecoverable_total[15m]) > 0 AND
 	avg by(backend) (haproxy_server_up{backend="app"}) > 0.8
 ```
 
-This will trigger an alert `RebootMachine` if `host_require_reboot` equals 1
-and there are at least 80% of all servers for backend `app` up.
+This will trigger an alert `RebootMachine` if `app_errors_unrecoverable_total`
+increased in the last 15 minutes and there are at least 80% of all servers for
+backend `app` up.
 
 Now the alert needs to get routed to prometheus-am-executor like in this 
 [alertmanager config](alertmanager.conf) example.
@@ -40,6 +38,15 @@ To make sure a system doesn't get rebooted multiple times, the
 `repeat_interval` needs to be longer than interval used for `increase()`. As
 long as that's the case, prometheus-am-executor will run the provided script
 only once.
+
+`increase(app_errors_unrecoverable_total[15m])` takes the value of
+`app_errors_unrecoverable_total` 15 minutes ago to calculate the increase, it's
+required that the metric already exists *before* the counter increase happens.
+The Prometheus client library sets counters to 0 by default, but only for
+metrics without dynamic labels. Otherwise the metric only appears the first time
+it is set. The alert won't get triggered if the metric uses dynamic labels and
+was incremented the very first time (the increase from 'unknown to 0). Therefor
+you **need** to initialize all error counters with 0.
 
 Since the alert gets triggered if the counter increased in the last 15 minutes,
 the alert resolves after 15 minutes without counter increase, so it's important
