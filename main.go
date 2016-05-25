@@ -159,6 +159,10 @@ func main() {
 	prometheus.MustRegister(processDuration)
 	prometheus.MustRegister(processesCurrent)
 	prometheus.MustRegister(errCounter)
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] script [args..]\n\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 	command := flag.Args()
 	if len(command) == 0 {
