@@ -51,7 +51,7 @@ increased in the last 15 minutes and there are at least 80% of all servers for
 backend `app` up.
 
 Now the alert needs to get routed to prometheus-am-executor like in this 
-[alertmanager config](alertmanager.conf) example.
+[alertmanager config](examples/alertmanager.conf) example.
 
 Finally prometheus-am-executor needs to be pointed to a reboot script:
 
