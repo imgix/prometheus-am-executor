@@ -47,7 +47,7 @@ var (
 )
 
 func handleError(w http.ResponseWriter, err error) {
-	fmt.Fprintf(w, err.Error())
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 	log.Println(err)
 }
 
@@ -74,6 +74,10 @@ func handleWebhook(w http.ResponseWriter, req *http.Request) {
 		handleError(w, err)
 		errCounter.WithLabelValues("start")
 	}
+}
+
+func handleHealth(w http.ResponseWriter, req *http.Request) {
+	fmt.Fprint(w, "All systems are functioning within normal specifications.\n")
 }
 
 type runner struct {
@@ -175,6 +179,7 @@ func main() {
 		rnr.args = command[1:]
 	}
 	http.HandleFunc("/", handleWebhook)
+	http.HandleFunc("/_health", handleHealth)
 	http.Handle("/metrics", prometheus.Handler())
 	log.Println("Listening on", *listenAddr, "and running", command)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
