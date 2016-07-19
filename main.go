@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -69,7 +67,9 @@ func handleWebhook(w http.ResponseWriter, req *http.Request) {
 		handleError(w, err)
 		errCounter.WithLabelValues("unmarshal")
 	}
-	log.Printf("Got: %#v", payload)
+	if *verbose {
+		log.Printf("Got: %#v", payload)
+	}
 	if err := rnr.run(amDataToEnv(payload)); err != nil {
 		handleError(w, err)
 		errCounter.WithLabelValues("start")
@@ -80,6 +80,13 @@ func handleHealth(w http.ResponseWriter, req *http.Request) {
 	fmt.Fprint(w, "All systems are functioning within normal specifications.\n")
 }
 
+type logWriter struct{}
+
+func (lw *logWriter) Write(p []byte) (n int, err error) {
+	log.Print(string(p))
+	return len(p), nil
+}
+
 type runner struct {
 	command   string
 	args      []string
@@ -87,32 +94,14 @@ type runner struct {
 }
 
 func (r *runner) run(env []string) error {
+	lw := &logWriter{}
+	processesCurrent.Inc()
+	defer processesCurrent.Dec()
 	cmd := exec.Command(r.command, r.args...)
 	cmd.Env = append(os.Environ(), env...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
-	go func() {
-		for scanner.Scan() {
-			log.Println(r.command+":", scanner.Text())
-		}
-		processesCurrent.Dec()
-		if err := cmd.Wait(); err != nil {
-			log.Println("Command", r.command, " with args", r.args, "failed:", err)
-			errCounter.WithLabelValues("exit")
-		}
-	}()
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return nil
+	cmd.Stdout = lw
+	cmd.Stderr = lw
+	return cmd.Run()
 }
 
 func timeToStr(t time.Time) string {
