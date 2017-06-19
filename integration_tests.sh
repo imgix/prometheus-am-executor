@@ -4,7 +4,7 @@ readonly ALERT_EXAMPLE='{"receiver":"default","status":"firing","alerts":[{"stat
 
 go build
 
-TMPFILE=$(tempfile)
+TMPFILE=$(mktemp)
 
 echo "Testing basic command execution, logging to $TMPFILE"
 ./prometheus-am-executor bash -c 'env' > "$TMPFILE" 2>&1 &
