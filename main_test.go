@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/juju/testing/checkers"
-	"github.com/prometheus/alertmanager/template"
+	"github.com/prometheus/alertmanager/tree/master/template"
 )
 
 var (
