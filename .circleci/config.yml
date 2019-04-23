@@ -2,9 +2,30 @@ version: 2.1
 
 jobs:
   build:
+    docker:
+      - image: ubuntu/bionic
+
     steps:
       - checkout
       - run:
           name: "Run tests"
+          command: make build
+
+  test:
+    docker:
+      - image: ubuntu/bionic
+
+    steps:
+      - checkout
+      - run:
+          name: "Build a binary"
           command: make test
 
+workflows:
+  version: 2
+  build-and-test:
+    jobs:
+      - build
+      - test:
+          requires:
+            - build
