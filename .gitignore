@@ -1,1 +1,3 @@
 prometheus-am-executor
+bin
+.go
