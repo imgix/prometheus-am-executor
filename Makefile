@@ -1,3 +1,7 @@
+ifndef TMPDIR
+export TMPDIR := /tmp
+endif
+
 .PHONY = test deps env build all
 
 export GOPATH := $(TMPDIR)/prometheus-am-executor-go
