@@ -1,9 +1,13 @@
+[![CircleCI](https://circleci.com/gh/imgix/prometheus-am-executor.svg?style=svg)](https://circleci.com/gh/imgix/prometheus-am-executor)
+
 # prometheus-am-executor
+
 The prometheus-am-executor is a HTTP server that receives alerts from the
 [Prometheus Alertmanager](https://prometheus.io/docs/alerting/alertmanager/) and
 executes a given command with alert details set as environment variables.
 
 ## Usage
+
 ```
 Usage: ./prometheus-am-executor [options] script [args..]
 
@@ -30,6 +34,7 @@ set:
 - `AMX_ALERT_<n>_ANNOTATION_<key>`: <value> alert annotation key/value pairs
 
 ## Example: Reboot systems with errors
+
 Sometimes a system might exhibit errors that require a hard reboot. This is an
 example on how to use Prometheus and prometheus-am-executor to reboot a machine
 a machine based on a alert while making sure enough instances are in service
@@ -64,6 +69,7 @@ alertmanager routes the alert to prometheus-am-executor which executes the
 reboot script.
 
 ### Caveats
+
 To make sure a system doesn't get rebooted multiple times, the 
 `repeat_interval` needs to be longer than interval used for `increase()`. As
 long as that's the case, prometheus-am-executor will run the provided script
