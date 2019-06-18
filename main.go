@@ -14,6 +14,7 @@ import (
 
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -53,7 +54,7 @@ func handleWebhook(w http.ResponseWriter, req *http.Request) {
 	if *verbose {
 		log.Println("Webhook triggered")
 	}
-	data, err := ioutil.ReadAll(req.Body)
+	data, err := ioutil/.ReadAll(req.Body)
 	if err != nil {
 		handleError(w, err)
 		errCounter.WithLabelValues("read")
@@ -169,7 +170,7 @@ func main() {
 	}
 	http.HandleFunc("/", handleWebhook)
 	http.HandleFunc("/_health", handleHealth)
-	http.Handle("/metrics", prometheus.Handler())
+	http.Handle("/metrics", promhttp.Handler())
 	log.Println("Listening on", *listenAddr, "and running", command)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
