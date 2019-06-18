@@ -54,7 +54,7 @@ func handleWebhook(w http.ResponseWriter, req *http.Request) {
 	if *verbose {
 		log.Println("Webhook triggered")
 	}
-	data, err := ioutil/.ReadAll(req.Body)
+	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		handleError(w, err)
 		errCounter.WithLabelValues("read")
