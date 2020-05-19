@@ -6,6 +6,26 @@ The prometheus-am-executor is a HTTP server that receives alerts from the
 [Prometheus Alertmanager](https://prometheus.io/docs/alerting/alertmanager/) and
 executes a given command with alert details set as environment variables.
 
+## Building
+
+##### Requirements
+
+* [Git](https://git-scm.com/downloads)
+* [Go](https://golang.org/doc/install)
+
+
+#### 1. Clone this repository
+
+```
+git clone https://github.com/imgix/prometheus-am-executor.git
+```
+
+#### 2. Compile the `prometheus-am-executor` binary
+
+```
+go build
+```
+
 ## Usage
 
 ```
