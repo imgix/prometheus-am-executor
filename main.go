@@ -83,6 +83,7 @@ func (c *config) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	if err := json.Unmarshal(data, payload); err != nil {
 		handleError(w, err)
 		c.errCounter.WithLabelValues("unmarshal").Inc()
+		return
 	}
 	if c.verbose {
 		log.Printf("Got: %#v", payload)
