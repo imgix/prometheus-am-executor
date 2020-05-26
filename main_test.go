@@ -208,7 +208,7 @@ func TestHandleWebhook(t *testing.T) {
 }
 
 func TestHandleHealth(t *testing.T) {
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest("GET", "/_health", nil)
 	w := httptest.NewRecorder()
 
 	handleHealth(w, req)
