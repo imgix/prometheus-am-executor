@@ -160,7 +160,7 @@ func readCli(c *config) error {
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
-		return fmt.Errorf("Missing command to execute on receipt of alarm")
+		return fmt.Errorf("missing command to execute on receipt of alarm")
 	}
 
 	c.command = args[0]
@@ -214,9 +214,8 @@ func serve(c *config) (*http.Server, chan error) {
 	// Start http server in a goroutine, so that it doesn't block other activities
 	var httpSrvResult = make(chan error)
 	go func() {
-		err := srv.ListenAndServe()
 		log.Println("Listening on", c.listenAddr, "with command", c.command)
-		httpSrvResult <- err
+		httpSrvResult <- srv.ListenAndServe()
 	}()
 
 	return srv, httpSrvResult

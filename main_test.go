@@ -57,7 +57,7 @@ var (
 
 	// A mapping of sample prometheus alert manager data, to the output we expect from the amDataToEnv function.
 	amDataToEnvMap = map[*template.Data][]string{
-		&alertManagerData: []string{
+		&alertManagerData: {
 			"AMX_ALERT_1_END=0",
 			"AMX_ALERT_1_LABEL_alertname=InstanceDown",
 			"AMX_ALERT_1_LABEL_instance=localhost:1234",
@@ -142,8 +142,8 @@ func RandLoopAddr() (string, error) {
 func TestAmDataToEnv(t *testing.T) {
 	for td, expectedEnv := range amDataToEnvMap {
 		env := amDataToEnv(td)
-		sort.Sort(sort.StringSlice(env))
-		sort.Sort(sort.StringSlice(expectedEnv))
+		sort.Strings(env)
+		sort.Strings(expectedEnv)
 
 		if ok, err := checkers.DeepEqual(env, expectedEnv); !ok {
 			log.Fatal(err)
@@ -197,7 +197,7 @@ func TestHandleWebhook(t *testing.T) {
 	}
 
 	// Check the error metrics
-	for _, label := range([]string{"read", "unmarshal", "start"}) {
+	for _, label := range []string{"read", "unmarshal", "start"} {
 		count, err := getCounterValue(c.errCounter, label)
 		if err != nil {
 			t.Errorf("Failed to retrieve '%s' count from handleWebhook: %v", label, err)
