@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
+	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -105,15 +108,17 @@ func getCounterValue(cv *prometheus.CounterVec, labels ...string) (float64, erro
 }
 
 // testConfig returns a test config for the prometheus-am-executor.
-func testConfig() (*config, error) {
+func testConfig() (*Config, error) {
 	addr, err := RandLoopAddr()
-	c := config{
-		listenAddr:      addr,
-		verbose:         false,
+	c := Config{
+		ListenAddr:      addr,
+		Verbose:         false,
 		processDuration: prometheus.NewHistogram(procDurationOpts),
 		processCurrent:  prometheus.NewGauge(procCurrentOpts),
 		errCounter:      prometheus.NewCounterVec(errCountOpts, errCountLabels),
-		command:         "echo",
+		Commands: []*Command{
+			{Cmd: "echo"},
+		},
 	}
 
 	return &c, err
@@ -151,58 +156,155 @@ func TestAmDataToEnv(t *testing.T) {
 	}
 }
 
+func TestCommand_Matches(t *testing.T) {
+	noMatching := make(map[string]string)
+	noMatching["banana"] = "ok"
+
+	allMatching := make(map[string]string)
+	// Randomly pick between 1 and all labels to include in allMatching
+	available := alertManagerData.CommonLabels.Names()
+	rand.Shuffle(len(available), func(i, j int) {
+		available[i], available[j] = available[j], available[i]
+	})
+	for _, l := range available[0 : rand.Intn(len(available))+1] {
+		allMatching[l] = alertManagerData.CommonLabels[l]
+	}
+
+	someMatching := make(map[string]string)
+	for k, v := range noMatching {
+		someMatching[k] = v
+	}
+	for k, v := range allMatching {
+		someMatching[k] = v
+	}
+
+	cases := []struct {
+		cmd  *Command
+		want bool
+	}{
+		// No labels defined should have command match all alerts
+		{
+			cmd:  &Command{Cmd: "echo"},
+			want: true,
+		},
+		// Labels that don't match means command should not match the alert
+		{
+			cmd:  &Command{Cmd: "echo", MatchLabels: noMatching},
+			want: false,
+		},
+		// When all labels match, the command should match the alert
+		{
+			cmd:  &Command{Cmd: "echo", MatchLabels: allMatching},
+			want: true,
+		},
+		// All labels need to match, for the command to match the alert
+		{
+			cmd:  &Command{Cmd: "echo", MatchLabels: someMatching},
+			want: false,
+		},
+	}
+
+	for i, c := range cases {
+		var condition_word string
+		if c.want {
+			condition_word = "should have"
+		} else {
+			condition_word = "should not have"
+		}
+		if c.cmd.Matches(&alertManagerData) != c.want {
+			t.Errorf("Case %d command %s matched alert; command labels %#v, alert labels %#v",
+				i, condition_word, c.cmd.MatchLabels, alertManagerData.CommonLabels)
+		}
+	}
+}
+
 func TestHandleWebhook(t *testing.T) {
+	if runtime.GOOS == "aix" || runtime.GOOS == "android" || runtime.GOOS == "illumos" || runtime.GOOS == "js" ||
+		runtime.GOOS == "plan9" || runtime.GOOS == "windows"{
+		t.Skip("Skip on platforms without 'false' command available")
+	}
+
 	payload, err := json.Marshal(&alertManagerData)
 	if err != nil {
 		t.Errorf("Failed to encode alertManagerData as JSON")
 	}
 
-	// Send a request to handleWebhook
-	req := httptest.NewRequest("GET", "/", bytes.NewReader(payload))
-	w := httptest.NewRecorder()
-
 	c, err := testConfig()
 	if err != nil {
 		t.Errorf("Failed to generate mock config")
 	}
-
-	c.handleWebhook(w, req)
-
-	// Check response of request
-	resp := w.Result()
-	if resp.StatusCode != 200 {
-		t.Errorf("Wrong response from handleWebhook; got %d, want %d", resp.StatusCode, 200)
-	}
-
-	// Check the process duration metric
-	var pdMetric pm.Metric
-	err = c.processDuration.Write(&pdMetric)
+	cWithErrCmds, err := testConfig()
 	if err != nil {
-		t.Errorf("Failed to retrieve processDuration metric from handleWebhook: %v", err)
-	}
-	durationCount := pdMetric.GetHistogram().GetSampleCount()
-	if durationCount == 0 {
-		t.Errorf("handleWebhook didn't observe processDuration metric samples")
+		t.Errorf("Failed to generate mock config")
 	}
 
-	// Check the process count metric
-	var pcMetric pm.Metric
-	err = c.processCurrent.Write(&pcMetric)
-	if err != nil {
-		t.Errorf("Failed to retrieve processCurrent metric from handleWebhook: %v", err)
-	}
-	current := pcMetric.GetGauge().GetValue()
-	if current > 0 {
-		t.Errorf("handleWebhook metric says process is still running; got %f, want %d", current, 0)
+	// We'll expect 2 errors based on these commands
+	cWithErrCmds.Commands = append(cWithErrCmds.Commands, &Command{Cmd: "false"})
+	cWithErrCmds.Commands = append(cWithErrCmds.Commands, &Command{Cmd: "false"})
+
+	cases := []struct {
+		config         *Config
+		req            *http.Request
+		w              *httptest.ResponseRecorder
+		wantStatusCode int
+		wantErrors     int
+	}{
+		{
+			config: c,
+			// Send a request to handleWebhook
+			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
+			w:              httptest.NewRecorder(),
+			wantStatusCode: http.StatusOK,
+			wantErrors:     0,
+		},
+		{
+			config:         cWithErrCmds,
+			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
+			w:              httptest.NewRecorder(),
+			wantStatusCode: http.StatusInternalServerError,
+			wantErrors:     2,
+		},
 	}
 
-	// Check the error metrics
-	for _, label := range []string{"read", "unmarshal", "start"} {
-		count, err := getCounterValue(c.errCounter, label)
+	for i, tc := range cases {
+		tc.config.handleWebhook(tc.w, tc.req)
+
+		// Check response of request
+		resp := tc.w.Result()
+		if resp.StatusCode != tc.wantStatusCode {
+			t.Errorf("Case %d wrong response from handleWebhook; got %d, want %d", i, resp.StatusCode, tc.wantStatusCode)
+		}
+
+		// Check the process duration metric
+		var pdMetric pm.Metric
+		err = tc.config.processDuration.Write(&pdMetric)
 		if err != nil {
-			t.Errorf("Failed to retrieve '%s' count from handleWebhook: %v", label, err)
-		} else if count > 0 {
-			t.Errorf("handleWebhook registered '%s' errors; got %f, want %d", label, count, 0)
+			t.Errorf("Case %d failed to retrieve processDuration metric from handleWebhook: %v", i, err)
+		}
+		durationCount := pdMetric.GetHistogram().GetSampleCount()
+		if durationCount == 0 {
+			t.Errorf("Case %d handleWebhook didn't observe processDuration metric samples", i)
+		}
+
+		// Check the process count metric
+		var pcMetric pm.Metric
+		err = tc.config.processCurrent.Write(&pcMetric)
+		if err != nil {
+			t.Errorf("Case %d failed to retrieve processCurrent metric from handleWebhook: %v", i, err)
+		}
+		current := pcMetric.GetGauge().GetValue()
+		if current > 0 {
+			t.Errorf("Case %d handleWebhook metric says process is still running; got %f, want %d", i, current, 0)
+		}
+
+		// Check the error metrics
+		for _, label := range []string{"read", "unmarshal", "start"} {
+			count, err := getCounterValue(tc.config.errCounter, label)
+			if err != nil {
+				t.Errorf("Case %d failed to retrieve '%s' count from handleWebhook: %v", i, label, err)
+			} else if count > float64(tc.wantErrors) {
+				t.Errorf("Case %d handleWebhook registered '%s' errors; got %f, want %d", i, label, count, tc.wantErrors)
+			}
 		}
 	}
 }
@@ -213,7 +315,7 @@ func TestHandleHealth(t *testing.T) {
 
 	handleHealth(w, req)
 	resp := w.Result()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Wrong response from handleHealth; got %d, want %d", resp.StatusCode, 200)
 	}
 	body, err := ioutil.ReadAll(resp.Body)

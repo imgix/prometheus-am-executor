@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/alertmanager/template"
@@ -53,20 +54,45 @@ var (
 )
 
 // Represent the configuration for this program
-type config struct {
-	listenAddr      string
-	verbose         bool
+type Config struct {
+	ListenAddr      string
+	Verbose         bool
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
 	errCounter      *prometheus.CounterVec
-	command         string
-	args            []string
+	Commands        []*Command
+}
+
+// Represent a command that could be run based on what labels match
+type Command struct {
+	Cmd  string
+	Args []string
+	// Only execute this command when all of the given labels match.
+	// The CommonLabels field of prometheus alert data is used for comparison.
+	MatchLabels map[string]string
+}
+
+// Matches returns true if all of its labels match against the given prometheus alert.
+// If we have no MatchLabels defined, we also return true.
+func (c *Command) Matches(alert *template.Data) bool {
+	if len(c.MatchLabels) == 0 {
+		return true
+	}
+
+	for k, v := range c.MatchLabels {
+		other, ok := alert.CommonLabels[k]
+		if !ok || v != other{
+			return false
+		}
+	}
+
+	return true
 }
 
 // handleWebhook is meant to respond to webhook requeests from prometheus alert manager.
 // It unpacks the alert payload, and passes the information to the program specified in its configuration.
-func (c *config) handleWebhook(w http.ResponseWriter, req *http.Request) {
-	if c.verbose {
+func (c *Config) handleWebhook(w http.ResponseWriter, req *http.Request) {
+	if c.Verbose {
 		log.Println("Webhook triggered")
 	}
 	data, err := ioutil.ReadAll(req.Body)
@@ -76,27 +102,66 @@ func (c *config) handleWebhook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if c.verbose {
+	if c.Verbose {
 		log.Println("Body:", string(data))
 	}
-	payload := &template.Data{}
+	var payload = &template.Data{}
 	if err := json.Unmarshal(data, payload); err != nil {
 		handleError(w, err)
 		c.errCounter.WithLabelValues("unmarshal").Inc()
 		return
 	}
-	if c.verbose {
+	if c.Verbose {
 		log.Printf("Got: %#v", payload)
 	}
 
-	c.processCurrent.Inc()
-	start := time.Now()
-	err = run(c.command, c.args, amDataToEnv(payload))
-	c.processDuration.Observe(time.Since(start).Seconds())
-	c.processCurrent.Dec()
-	if err != nil {
+	var env = amDataToEnv(payload)
+
+	// Define a function to instrument and run a command. This will be called in a goroutine.
+	//
+	// The prometheus structs use sync/atomic in methods like Dec and Observe,
+	// so they're safe to call concurrently from goroutines.
+	var do = func(cmd *Command, err chan<- error) {
+		defer close(err)
+		defer c.processCurrent.Dec()
+		start := time.Now()
+		e := run(cmd.Cmd, cmd.Args, env)
+		c.processDuration.Observe(time.Since(start).Seconds())
+		err <- e
+	}
+
+	// Execute our commands, and wait for them to return
+	var results = make([]chan error, 0)
+	for _, cmd := range c.Commands {
+		if !cmd.Matches(payload) {
+			// This is not a command we should run for this alert.
+			continue
+		}
+		out := make(chan error, 1)
+		results = append(results, out)
+		c.processCurrent.Inc()
+		go do(cmd, out)
+	}
+
+	// Collect errors from our commands, which also has us wait for all commands to finish
+	var errors = make([]string, 0)
+	for len(results) > 0 {
+		out := results[0]
+		results = results[1:]
+		select {
+		case err := <-out:
+			if err != nil {
+				errors = append(errors, err.Error())
+			}
+		default:
+			results = append(results, out)
+		}
+	}
+
+	if len(errors) > 0 {
+		err := fmt.Errorf(strings.Join(errors, "\n"))
 		handleError(w, err)
-		c.errCounter.WithLabelValues("start").Inc()
+		c.errCounter.WithLabelValues("start").Add(float64(len(errors)))
 	}
 }
 
@@ -154,27 +219,37 @@ func handleHealth(w http.ResponseWriter, req *http.Request) {
 }
 
 // readCli parses cli flags and populates them in config
-func readCli(c *config) error {
-	flag.StringVar(&c.listenAddr, "l", ":8080", "HTTP Port to listen on")
-	flag.BoolVar(&c.verbose, "v", false, "Enable verbose/debug logging")
+func readCli(c *Config) error {
+	flag.StringVar(&c.ListenAddr, "l", ":8080", "HTTP Port to listen on")
+	flag.BoolVar(&c.Verbose, "v", false, "Enable verbose/debug logging")
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
 		return fmt.Errorf("missing command to execute on receipt of alarm")
 	}
 
-	c.command = args[0]
-	if len(args) > 1 {
-		c.args = args[1:]
+	cmd := Command{
+		Cmd: args[0],
 	}
+
+	if len(args) > 1 {
+		cmd.Args = args[1:]
+	}
+
+	if c.Commands == nil {
+		c.Commands = make([]*Command, 0)
+	}
+	c.Commands = append(c.Commands, &cmd)
 
 	return nil
 }
 
 // readConfig reads config from supported means (cli flags, config file), and returns a config struct for this program.
 // Cli flags will overwrite settings in the config file.
-func readConfig() (*config, error) {
-	c := config{}
+func readConfig() (*Config, error) {
+	c := Config{}
+	c.Commands = make([]*Command, 0)
+
 	err := readCli(&c)
 	if err != nil {
 		flag.Usage()
@@ -200,13 +275,13 @@ func run(name string, args []string, env []string) error {
 // serve starts the golang http server with the given routes, and returns
 // a reference to the HTTP server (so that one could gracefully shut it down), and
 // a channel that will contain the error result of the ListenAndServe call
-func serve(c *config) (*http.Server, chan error) {
+func serve(c *Config) (*http.Server, chan error) {
 	prometheus.MustRegister(c.processDuration)
 	prometheus.MustRegister(c.processCurrent)
 	prometheus.MustRegister(c.errCounter)
 
 	// Use DefaultServeMux as the handler
-	srv := &http.Server{Addr: c.listenAddr, Handler: nil}
+	srv := &http.Server{Addr: c.ListenAddr, Handler: nil}
 	http.HandleFunc("/", c.handleWebhook)
 	http.HandleFunc("/_health", handleHealth)
 	http.Handle("/metrics", promhttp.Handler())
@@ -214,7 +289,11 @@ func serve(c *config) (*http.Server, chan error) {
 	// Start http server in a goroutine, so that it doesn't block other activities
 	var httpSrvResult = make(chan error)
 	go func() {
-		log.Println("Listening on", c.listenAddr, "with command", c.command)
+		commands := make([]string, len(c.Commands))
+		for i, e := range c.Commands {
+			commands[i] = e.Cmd
+		}
+		log.Println("Listening on", c.ListenAddr, "with commands", strings.Join(commands, ", "))
 		httpSrvResult <- srv.ListenAndServe()
 	}()
 
@@ -254,7 +333,7 @@ func main() {
 	select {
 	case err := <-srvResult:
 		if err != nil {
-			log.Fatalf("Failed to serve for %s: %v", c.listenAddr, err)
+			log.Fatalf("Failed to serve for %s: %v", c.ListenAddr, err)
 		} else {
 			log.Println("HTTP server shut down")
 		}
