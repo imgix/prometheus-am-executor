@@ -528,7 +528,7 @@ commands:
 	if mergedAgain.ListenAddr != yamlConf.ListenAddr {
 		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", mergedAgain.ListenAddr, yamlConf.ListenAddr)
 	}
-	if mergedAgain.Verbose != yamlConf.Verbose {
+	if mergedAgain.Verbose != (merged.Verbose || yamlConf.Verbose) {
 		t.Errorf("Wrong Verbose for merged config; got %v, want %v", mergedAgain.Verbose, yamlConf.Verbose)
 	}
 
