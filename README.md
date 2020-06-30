@@ -100,7 +100,7 @@ If you'd like to check the behaviour of a configuration file when prometheus-am-
 ./prometheus-am-executor -f examples/executor.yml -v
 ```
 
-##### 2. Sent an alert to prometheus-am-executor
+##### 2. Send an alert to prometheus-am-executor
 
 Make sure the port used in the curl command matches whatever you specified.
 
