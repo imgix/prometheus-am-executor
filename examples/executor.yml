@@ -1,0 +1,12 @@
+---
+listen_address: ":23222"
+verbose: false
+commands:
+  - cmd: echo
+    args: ["banana", "tomato"]
+    match_labels:
+      "env": "testing"
+      "owner": "me"
+  - cmd: /bin/true
+    match_labels:
+      "beep": "boop"
