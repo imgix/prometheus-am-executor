@@ -26,6 +26,7 @@ const (
 	metricNamespace = "am_executor"
 	// How long we are willing to wait for the HTTP server to shut down gracefully
 	serverShutdownTime = time.Second * 4
+	defaultListenAddr  = ":8080"
 )
 
 var (
@@ -170,7 +171,13 @@ func (c *Config) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	for _, cmd := range c.Commands {
 		if !cmd.Matches(payload) {
 			// This is not a command we should run for this alert.
+			if c.Verbose {
+				log.Printf("Skipping non-matching command: %s %s", cmd.Cmd, strings.Join(cmd.Args, " "))
+			}
 			continue
+		}
+		if c.Verbose {
+			log.Printf("Executing: %s %s", cmd.Cmd, strings.Join(cmd.Args, " "))
 		}
 		out := make(chan error, 1)
 		results = append(results, out)
@@ -270,8 +277,10 @@ func mergeConfigs(all ...*Config) *Config {
 	var merged = &Config{}
 
 	for _, c := range all {
-		merged.ListenAddr = c.ListenAddr
-		merged.Verbose = c.Verbose
+		if len(c.ListenAddr) > 0 {
+			merged.ListenAddr = c.ListenAddr
+		}
+		merged.Verbose = merged.Verbose || c.Verbose
 		merged.processDuration = c.processDuration
 		merged.processCurrent = c.processCurrent
 		merged.errCounter = c.errCounter
@@ -289,7 +298,7 @@ func mergeConfigs(all ...*Config) *Config {
 // readCli parses cli flags and populates them in config
 func readCli(c *Config) (string, error) {
 	var configFile string
-	flag.StringVar(&c.ListenAddr, "l", ":8080", "HTTP Port to listen on")
+	flag.StringVar(&c.ListenAddr, "l", "", fmt.Sprintf("HTTP Port to listen on (default \"%s\")", defaultListenAddr))
 	flag.BoolVar(&c.Verbose, "v", false, "Enable verbose/debug logging")
 	flag.StringVar(&configFile, "f", "", "YAML config file to use")
 	flag.Parse()
@@ -336,6 +345,10 @@ func readConfig() (*Config, error) {
 
 	if len(c.Commands) == 0 {
 		return nil, fmt.Errorf("missing command to execute on receipt of alarm")
+	}
+
+	if len(c.ListenAddr) == 0 {
+		c.ListenAddr = defaultListenAddr
 	}
 
 	c.processDuration = prometheus.NewHistogram(procDurationOpts)

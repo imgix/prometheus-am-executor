@@ -58,7 +58,7 @@ set:
 
 ### Using a configuration file
 
-If the `-f` flag is set, the program will read the given YAML file as configuration. Any settings specified at the cli take precedence over the same settings defined in a config file.
+If the `-f` flag is set, the program will read the given YAML file as configuration on startup. Any settings specified at the cli take precedence over the same settings defined in a config file.
 
 This feature is useful if you wish to configure prometheus-am-executor to dispatch to multiple processes based on what labels match between an alert and a command configuration.
 
@@ -89,6 +89,26 @@ commands:
 |`match_labels`|What alert labels you'd like to use, to determine if the command should be executed. **All** specified labels must match in order for the command to be executed. If `match_labels` isn't specified, the command will be executed for _all_ alerts.|
 
 In the above configuration example, `/bin/true` will be executed for all alerts, and `echo` will be executed when an alert has the labels `env="testing"` and `owner="me"`.
+
+#### Testing configuration file changes
+
+If you'd like to check the behaviour of a configuration file when prometheus-am-executor receives alerts, you can use the [curl](https://curl.haxx.se/) command to replay an alert. An example alert payload is [provided in the examples directory](examples/alert_payload.json).
+
+##### 1. Start prometheus-am-executor with your configuration file
+
+```
+./prometheus-am-executor -f examples/executor.yml -v
+```
+
+##### 2. Sent an alert to prometheus-am-executor
+
+Make sure the port used in the curl command matches whatever you specified.
+
+```
+curl --include -H 'Content-Type: application/json' --data-binary "@examples/alert_payload.json" -X GET 'http://localhost:23222/'
+```
+
+##### 3. Check the output of prometheus-am-executor
 
 ## Example: Reboot systems with errors
 
