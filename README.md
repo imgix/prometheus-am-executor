@@ -31,12 +31,14 @@ go build
 ```
 Usage: ./prometheus-am-executor [options] script [args..]
 
+  -f string
+        YAML config file to use
   -l string
     	HTTP Port to listen on (default ":8080")
   -v	Enable verbose/debug logging
 ```
 
-The executor runs the provided script with the following environment variables
+The executor runs the provided script(s) (set via cli or yaml config file) with the following environment variables
 set:
 
 - `AMX_RECEIVER`: name of receiver in the AM triggering the alert
@@ -52,6 +54,41 @@ set:
 - `AMX_ALERT_<n>_URL`: URL to metric in prometheus
 - `AMX_ALERT_<n>_LABEL_<label>`: <value> alert label pairs
 - `AMX_ALERT_<n>_ANNOTATION_<key>`: <value> alert annotation key/value pairs
+
+
+### Using a configuration file
+
+If the `-f` flag is set, the program will read the given YAML file as configuration. Any settings specified at the cli take precedence over the same settings defined in a config file.
+
+This feature is useful if you wish to configure prometheus-am-executor to dispatch to multiple processes based on what labels match between an alert and a command configuration.
+
+An [example config file](examples/executor.yml) is provided in the examples directory.
+
+#### Configuration file format
+
+```yaml
+---
+listen_address: ":8080"
+verbose: false
+commands:
+  - cmd: echo
+    args: ["banana", "tomato"]
+    match_labels:
+      "env": "testing"
+      "owner": "me"
+  - cmd: /bin/true
+```
+
+|Parameter|Use|
+|---------|---|
+|`listen_address`|HTTP Port to listen on. Equivalent to the `-l` cli flag.|
+|`verbose`|Enable verbose/debug logging. Equivalent to the `-v` cli flag.|
+|`commands`|A config section that specifies one or more commands to execute when alerts are received.|
+|`cmd`|The name or path to the command you want to execute.|
+|`args`|Optional arguments that you want to pass to the command|
+|`match_labels`|What alert labels you'd like to use, to determine if the command should be executed. **All** specified labels must match in order for the command to be executed. If `match_labels` isn't specified, the command will be executed for _all_ alerts.|
+
+In the above configuration example, `/bin/true` will be executed for all alerts, and `echo` will be executed when an alert has the labels `env="true"` and `owner="me"`.
 
 ## Example: Reboot systems with errors
 

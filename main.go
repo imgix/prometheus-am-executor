@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -55,21 +56,55 @@ var (
 
 // Represent the configuration for this program
 type Config struct {
-	ListenAddr      string
-	Verbose         bool
+	ListenAddr      string `yaml:"listen_address"`
+	Verbose         bool   `yaml:"verbose"`
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
 	errCounter      *prometheus.CounterVec
-	Commands        []*Command
+	Commands        []*Command `yaml:"commands"`
 }
 
 // Represent a command that could be run based on what labels match
 type Command struct {
-	Cmd  string
-	Args []string
+	Cmd  string   `yaml:"cmd"`
+	Args []string `yaml:"args"`
 	// Only execute this command when all of the given labels match.
 	// The CommonLabels field of prometheus alert data is used for comparison.
-	MatchLabels map[string]string
+	MatchLabels map[string]string `yaml:"match_labels"`
+}
+
+// Equal returns true if the Command is identical to another Command
+func (c *Command) Equal(other *Command) bool {
+	if c.Cmd != other.Cmd {
+		return false
+	}
+
+	if len(c.Args) != len(other.Args) {
+		return false
+	}
+
+	if len(c.MatchLabels) != len(other.MatchLabels) {
+		return false
+	}
+
+	for i, arg := range c.Args {
+		if arg != other.Args[i] {
+			return false
+		}
+	}
+
+	for k, v := range c.MatchLabels {
+		otherValue, ok := other.MatchLabels[k]
+		if !ok {
+			return false
+		}
+
+		if v != otherValue {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Matches returns true if all of its labels match against the given prometheus alert.
@@ -81,7 +116,7 @@ func (c *Command) Matches(alert *template.Data) bool {
 
 	for k, v := range c.MatchLabels {
 		other, ok := alert.CommonLabels[k]
-		if !ok || v != other{
+		if !ok || v != other {
 			return false
 		}
 	}
@@ -165,6 +200,16 @@ func (c *Config) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// HasCommand returns True if the config contains the given Command
+func (c *Config) HasCommand(other *Command) bool {
+	for _, cmd := range c.Commands {
+		if cmd.Equal(other) {
+			return true
+		}
+	}
+	return false
+}
+
 // amDataToEnv converts prometheus alert manager template data into key=value strings,
 // which are meant to be set as environment variables of commands called by this program..
 func amDataToEnv(td *template.Data) []string {
@@ -218,16 +263,44 @@ func handleHealth(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// readCli parses cli flags and populates them in config
-func readCli(c *Config) error {
-	flag.StringVar(&c.ListenAddr, "l", ":8080", "HTTP Port to listen on")
-	flag.BoolVar(&c.Verbose, "v", false, "Enable verbose/debug logging")
-	flag.Parse()
-	args := flag.Args()
-	if len(args) == 0 {
-		return fmt.Errorf("missing command to execute on receipt of alarm")
+// mergeConfigs returns a config representing all the Configs merged together,
+// with later Config structs overriding settings in earlier ones (like ListenAddr).
+// Commands are added if they are unique from others.
+func mergeConfigs(all ...*Config) *Config {
+	var merged = &Config{}
+
+	for _, c := range all {
+		merged.ListenAddr = c.ListenAddr
+		merged.Verbose = c.Verbose
+		merged.processDuration = c.processDuration
+		merged.processCurrent = c.processCurrent
+		merged.errCounter = c.errCounter
+
+		for _, cmd := range c.Commands {
+			if !merged.HasCommand(cmd) {
+				merged.Commands = append(merged.Commands, cmd)
+			}
+		}
 	}
 
+	return merged
+}
+
+// readCli parses cli flags and populates them in config
+func readCli(c *Config) (string, error) {
+	var configFile string
+	flag.StringVar(&c.ListenAddr, "l", ":8080", "HTTP Port to listen on")
+	flag.BoolVar(&c.Verbose, "v", false, "Enable verbose/debug logging")
+	flag.StringVar(&configFile, "f", "", "YAML config file to use")
+	flag.Parse()
+	args := flag.Args()
+	if len(configFile) == 0 && len(args) == 0 {
+		return configFile, fmt.Errorf("missing command to execute on receipt of alarm")
+	} else if len(args) == 0 {
+		return configFile, nil
+	}
+
+	// Add the command specified at the cli to the config
 	cmd := Command{
 		Cmd: args[0],
 	}
@@ -235,31 +308,41 @@ func readCli(c *Config) error {
 	if len(args) > 1 {
 		cmd.Args = args[1:]
 	}
-
-	if c.Commands == nil {
-		c.Commands = make([]*Command, 0)
-	}
 	c.Commands = append(c.Commands, &cmd)
 
-	return nil
+	return configFile, nil
 }
 
 // readConfig reads config from supported means (cli flags, config file), and returns a config struct for this program.
 // Cli flags will overwrite settings in the config file.
 func readConfig() (*Config, error) {
-	c := Config{}
-	c.Commands = make([]*Command, 0)
-
-	err := readCli(&c)
+	var cli = &Config{}
+	configFile, err := readCli(cli)
 	if err != nil {
 		flag.Usage()
+		return nil, err
+	}
+
+	var file = &Config{}
+	if len(configFile) > 0 {
+		data, err := ioutil.ReadFile(configFile)
+		err = yaml.Unmarshal(data, file)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	c := mergeConfigs(file, cli)
+
+	if len(c.Commands) == 0 {
+		return nil, fmt.Errorf("missing command to execute on receipt of alarm")
 	}
 
 	c.processDuration = prometheus.NewHistogram(procDurationOpts)
 	c.processCurrent = prometheus.NewGauge(procCurrentOpts)
 	c.errCounter = prometheus.NewCounterVec(errCountOpts, errCountLabels)
 
-	return &c, err
+	return c, err
 }
 
 // run executes the given command with the given environment, and attaches its STDOUT and STDERR to the logger.
