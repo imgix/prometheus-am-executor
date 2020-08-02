@@ -243,6 +243,7 @@ func amDataToEnv(td *template.Data) []string {
 			key+"_START"+"="+timeToStr(alert.StartsAt),
 			key+"_END"+"="+timeToStr(alert.EndsAt),
 			key+"_URL"+"="+alert.GeneratorURL,
+			key+"_FINGERPRINT"+"="+alert.Fingerprint,
 		)
 		for p, m := range map[string]map[string]string{
 			"LABEL":      alert.Labels,
