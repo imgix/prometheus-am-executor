@@ -46,6 +46,7 @@ var (
 				StartsAt:     time.Unix(1460045332, 0),
 				EndsAt:       time.Time{},
 				GeneratorURL: "http://oldpad:9090/graph#%5B%7B%22expr%22%3A%22up%20%3D%3D%200%22%2C%22tab%22%3A0%7D%5D",
+				Fingerprint:  "boop",
 			},
 		},
 		GroupLabels: template.KV{"alertname": "InstanceDown"},
@@ -70,6 +71,7 @@ var (
 			"AMX_ALERT_1_START=1460045332",
 			"AMX_ALERT_1_STATUS=firing",
 			"AMX_ALERT_1_URL=http://oldpad:9090/graph#%5B%7B%22expr%22%3A%22up%20%3D%3D%200%22%2C%22tab%22%3A0%7D%5D",
+			"AMX_ALERT_1_FINGERPRINT=",
 
 			"AMX_ALERT_2_END=0",
 			"AMX_ALERT_2_LABEL_alertname=InstanceDown",
@@ -79,6 +81,7 @@ var (
 			"AMX_ALERT_2_START=1460045332",
 			"AMX_ALERT_2_STATUS=firing",
 			"AMX_ALERT_2_URL=http://oldpad:9090/graph#%5B%7B%22expr%22%3A%22up%20%3D%3D%200%22%2C%22tab%22%3A0%7D%5D",
+			"AMX_ALERT_2_FINGERPRINT=boop",
 
 			"AMX_ALERT_LEN=2",
 			"AMX_EXTERNAL_URL=http://oldpad:9093",
