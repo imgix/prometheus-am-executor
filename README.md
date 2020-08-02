@@ -52,6 +52,7 @@ set:
 - `AMX_ALERT_<n>_START`: start of alert in seconds since epoch
 - `AMX_ALERT_<n>_END`: end of alert, 0 for firing alerts
 - `AMX_ALERT_<n>_URL`: URL to metric in prometheus
+- `AMX_ALERT_<n>_FINGERPRINT`: Message Fingerprint
 - `AMX_ALERT_<n>_LABEL_<label>`: <value> alert label pairs
 - `AMX_ALERT_<n>_ANNOTATION_<key>`: <value> alert annotation key/value pairs
 
