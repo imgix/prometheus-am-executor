@@ -1,6 +1,8 @@
 ---
 listen_address: ":23222"
 verbose: false
+tls_key: "certs/key.pem"
+tls_crt: "certs/cert.pem"
 commands:
   - cmd: echo
     args: ["banana", "tomato"]
