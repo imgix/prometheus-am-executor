@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v2"
 
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/client_golang/prometheus"
@@ -55,17 +56,19 @@ var (
 	errCountLabels = []string{"stage"}
 )
 
-// Represent the configuration for this program
+// Config represents the configuration for this program
 type Config struct {
 	ListenAddr      string `yaml:"listen_address"`
 	Verbose         bool   `yaml:"verbose"`
+	TLSKey          string `yaml:"tls_key"`
+	TLSCrt          string `yaml:"tls_crt"`
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
 	errCounter      *prometheus.CounterVec
 	Commands        []*Command `yaml:"commands"`
 }
 
-// Represent a command that could be run based on what labels match
+// Command represents a command that could be run based on what labels match
 type Command struct {
 	Cmd  string   `yaml:"cmd"`
 	Args []string `yaml:"args"`
@@ -129,7 +132,7 @@ func (c *Command) Matches(alert *template.Data) bool {
 // It unpacks the alert payload, and passes the information to the program specified in its configuration.
 func (c *Config) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	if c.Verbose {
-		log.Println("Webhook triggered")
+		log.Println("Webhook triggered from remote address:port", req.RemoteAddr)
 	}
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
@@ -285,6 +288,12 @@ func mergeConfigs(all ...*Config) *Config {
 		merged.processDuration = c.processDuration
 		merged.processCurrent = c.processCurrent
 		merged.errCounter = c.errCounter
+		if c.TLSKey != "" {
+			merged.TLSKey = c.TLSKey
+		}
+		if c.TLSCrt != "" {
+			merged.TLSCrt = c.TLSCrt
+		}
 
 		for _, cmd := range c.Commands {
 			if !merged.HasCommand(cmd) {
@@ -391,7 +400,17 @@ func serve(c *Config) (*http.Server, chan error) {
 			commands[i] = e.Cmd
 		}
 		log.Println("Listening on", c.ListenAddr, "with commands", strings.Join(commands, ", "))
-		httpSrvResult <- srv.ListenAndServe()
+		if (c.TLSCrt != "") && (c.TLSKey != "") {
+			if c.Verbose {
+				log.Println("HTTPS on")
+			}
+			httpSrvResult <- srv.ListenAndServeTLS(c.TLSCrt, c.TLSKey)
+		} else {
+			if c.Verbose {
+				log.Println("HTTPS off")
+			}
+			httpSrvResult <- srv.ListenAndServe()
+		}
 	}()
 
 	return srv, httpSrvResult

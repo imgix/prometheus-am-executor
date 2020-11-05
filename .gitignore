@@ -1,3 +1,10 @@
 prometheus-am-executor
 bin
 .go
+
+# VSCode workspace Settings
+*.vscode
+*.code-workspace
+
+# Ignore tls certs dir
+certs
