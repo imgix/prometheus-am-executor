@@ -84,8 +84,8 @@ commands:
 |---------|---|
 |`listen_address`|HTTP Port to listen on. Equivalent to the `-l` cli flag.|
 |`verbose`|Enable verbose/debug logging. Equivalent to the `-v` cli flag.|
-|`tls_key`|The TLS Key file for the TLS listener.|
-|`tls_crt`|The TLS Certificate file for the TLS listener.|
+|`tls_key`|The TLS Key file for an optional TLS listener.|
+|`tls_crt`|The TLS Certificate file for an optional TLS listener.|
 |`commands`|A config section that specifies one or more commands to execute when alerts are received.|
 |`cmd`|The name or path to the command you want to execute.|
 |`args`|Optional arguments that you want to pass to the command|
@@ -100,7 +100,7 @@ With the following command can you create a TLS key and certificate for testing 
 ```
 mkdir certs
 cd certs
-go run /usr/local/go/src/crypto/tls/generate_cert.go --rsa-bits=2048 --host=localhost
+go run $(go env GOROOT)/src/crypto/tls/generate_cert.go --rsa-bits=2048 --host=localhost
 ```
 
 #### Testing configuration file changes

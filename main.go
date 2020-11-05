@@ -56,7 +56,7 @@ var (
 	errCountLabels = []string{"stage"}
 )
 
-// Config Represent the configuration for this program
+// Config represents the configuration for this program
 type Config struct {
 	ListenAddr      string `yaml:"listen_address"`
 	Verbose         bool   `yaml:"verbose"`
@@ -68,7 +68,7 @@ type Config struct {
 	Commands        []*Command `yaml:"commands"`
 }
 
-// Command Represent a command that could be run based on what labels match
+// Command represents a command that could be run based on what labels match
 type Command struct {
 	Cmd  string   `yaml:"cmd"`
 	Args []string `yaml:"args"`
