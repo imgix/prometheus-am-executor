@@ -95,21 +95,18 @@ var (
 	}
 )
 
-// genTestConfig returns a test config for the prometheus-am-executor.
-func genTestConfig() (*Config, error) {
+// genServer returns a test server for the prometheus-am-executor.
+func genServer() (*Server, error) {
 	addr, err := RandLoopAddr()
 	c := Config{
-		ListenAddr:      addr,
-		Verbose:         false,
-		processDuration: prometheus.NewHistogram(procDurationOpts),
-		processCurrent:  prometheus.NewGauge(procCurrentOpts),
-		errCounter:      prometheus.NewCounterVec(errCountOpts, errCountLabels),
+		ListenAddr: addr,
+		Verbose:    false,
 		Commands: []*Command{
 			{Cmd: "echo"},
 		},
 	}
-
-	return &c, err
+	s := NewServer(&c)
+	return s, err
 }
 
 // getCounterValue digs through nested prometheus structs to retrieve a metric's value
@@ -148,7 +145,7 @@ func RandLoopAddr() (string, error) {
 	return ln.Addr().String(), nil
 }
 
-func TestAmDataToEnv(t *testing.T) {
+func Test_amDataToEnv(t *testing.T) {
 	t.Parallel()
 	for td, expectedEnv := range amDataToEnvMap {
 		env := amDataToEnv(td)
@@ -157,6 +154,98 @@ func TestAmDataToEnv(t *testing.T) {
 
 		if ok, err := checkers.DeepEqual(env, expectedEnv); !ok {
 			log.Fatal(err)
+		}
+	}
+}
+
+func Test_handleHealth(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest("GET", "/_health", nil)
+	w := httptest.NewRecorder()
+
+	handleHealth(w, req)
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Wrong response from handleHealth; got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Errorf("Failed to read response from handleHealth: %v", err)
+	}
+	expected := "All systems are functioning within normal specifications.\n"
+	if string(body) != expected {
+		t.Errorf("Unexpected response body; got %s, want %s", string(body), expected)
+	}
+}
+
+func Test_mergeConfigs(t *testing.T) {
+	t.Parallel()
+
+	a := &Config{
+		ListenAddr: "localhost:8080",
+		Verbose:    false,
+		Commands: []*Command{
+			{Cmd: "echo"},
+		},
+	}
+
+	b := &Config{
+		ListenAddr: "localhost:8081",
+		Verbose:    true,
+		Commands: []*Command{
+			{Cmd: "/bin/echo"},
+		},
+	}
+
+	merged := mergeConfigs(a, b)
+	if merged.ListenAddr != b.ListenAddr {
+		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", merged.ListenAddr, b.ListenAddr)
+	}
+	if merged.Verbose != b.Verbose {
+		t.Errorf("Wrong Verbose for merged config; got %v, want %v", merged.Verbose, b.Verbose)
+	}
+
+	allCmds := make([]*Command, 0)
+	allCmds = append(allCmds, a.Commands...)
+	allCmds = append(allCmds, b.Commands...)
+	for _, cmd := range allCmds {
+		if !merged.HasCommand(cmd) {
+			t.Errorf("Missing command %#v", cmd)
+		}
+	}
+
+	yamlFile := `---
+listen_address: ":23222"
+verbose: false
+commands:
+  - cmd: echo
+    args: ["banana", "tomato"]
+    match_labels:
+      "env": "testing"
+      "owner": "me"
+  - cmd: /bin/true
+    match_labels:
+      "beep": "boop"
+`
+	yamlConf := &Config{}
+	err := yaml.Unmarshal([]byte(yamlFile), yamlConf)
+	if err != nil {
+		t.Errorf("Failed to unmarshal yaml config file; %v", err)
+	}
+
+	mergedAgain := mergeConfigs(merged, yamlConf)
+
+	if mergedAgain.ListenAddr != yamlConf.ListenAddr {
+		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", mergedAgain.ListenAddr, yamlConf.ListenAddr)
+	}
+	if mergedAgain.Verbose != (merged.Verbose || yamlConf.Verbose) {
+		t.Errorf("Wrong Verbose for merged config; got %v, want %v", mergedAgain.Verbose, (merged.Verbose || yamlConf.Verbose))
+	}
+
+	allCmds = append(allCmds, yamlConf.Commands...)
+	for _, cmd := range allCmds {
+		if !mergedAgain.HasCommand(cmd) {
+			t.Errorf("Missing command %#v", cmd)
 		}
 	}
 }
@@ -353,7 +442,7 @@ func TestConfig_HasCommand(t *testing.T) {
 	}
 }
 
-func TestHandleWebhook(t *testing.T) {
+func TestServer_handleWebhook(t *testing.T) {
 	if runtime.GOOS == "aix" || runtime.GOOS == "android" || runtime.GOOS == "illumos" || runtime.GOOS == "js" ||
 		runtime.GOOS == "plan9" || runtime.GOOS == "windows" {
 		t.Skip("Skip on platforms without 'false' command available")
@@ -364,22 +453,31 @@ func TestHandleWebhook(t *testing.T) {
 		t.Errorf("Failed to encode alertManagerData as JSON")
 	}
 
-	c, err := genTestConfig()
+	srv, err := genServer()
 	if err != nil {
-		t.Errorf("Failed to generate mock config")
+		t.Errorf("Failed to generate server")
 	}
-	cWithErrCmds, err := genTestConfig()
+	httpSrv, _ := srv.Start()
+	defer func() {
+		_ = stopServer(httpSrv)
+	}()
+
+	srvWithErrCmds, err := genServer()
 	if err != nil {
-		t.Errorf("Failed to generate mock config")
+		t.Errorf("Failed to generate server")
 	}
+	httpSrvWithErrCmds, _ := srvWithErrCmds.Start()
+	defer func() {
+		_ = stopServer(httpSrvWithErrCmds)
+	}()
 
 	// We'll expect 2 errors based on these commands
-	cWithErrCmds.Commands = append(cWithErrCmds.Commands, &Command{Cmd: "false"})
-	cWithErrCmds.Commands = append(cWithErrCmds.Commands, &Command{Cmd: "false"})
+	srvWithErrCmds.config.Commands = append(srvWithErrCmds.config.Commands, &Command{Cmd: "false"})
+	srvWithErrCmds.config.Commands = append(srvWithErrCmds.config.Commands, &Command{Cmd: "false"})
 
 	cases := []struct {
 		name           string
-		config         *Config
+		server         *Server
 		req            *http.Request
 		w              *httptest.ResponseRecorder
 		wantStatusCode int
@@ -387,7 +485,7 @@ func TestHandleWebhook(t *testing.T) {
 	}{
 		{
 			name:   "good",
-			config: c,
+			server: srv,
 			// Send a request to handleWebhook
 			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
 			w:              httptest.NewRecorder(),
@@ -396,7 +494,7 @@ func TestHandleWebhook(t *testing.T) {
 		},
 		{
 			name:           "cmd_errors",
-			config:         cWithErrCmds,
+			server:         srvWithErrCmds,
 			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
 			w:              httptest.NewRecorder(),
 			wantStatusCode: http.StatusInternalServerError,
@@ -408,7 +506,7 @@ func TestHandleWebhook(t *testing.T) {
 		tc := tc // Capture range variable, for use in anonymous function
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tc.config.handleWebhook(tc.w, tc.req)
+			tc.server.handleWebhook(tc.w, tc.req)
 
 			// Check response of request
 			resp := tc.w.Result()
@@ -418,7 +516,7 @@ func TestHandleWebhook(t *testing.T) {
 
 			// Check the process duration metric
 			var pdMetric pm.Metric
-			err = tc.config.processDuration.Write(&pdMetric)
+			err = tc.server.processDuration.Write(&pdMetric)
 			if err != nil {
 				t.Errorf("Failed to retrieve processDuration metric from handleWebhook: %v", err)
 			}
@@ -429,7 +527,7 @@ func TestHandleWebhook(t *testing.T) {
 
 			// Check the process count metric
 			var pcMetric pm.Metric
-			err = tc.config.processCurrent.Write(&pcMetric)
+			err = tc.server.processCurrent.Write(&pcMetric)
 			if err != nil {
 				t.Errorf("Failed to retrieve processCurrent metric from handleWebhook: %v", err)
 			}
@@ -440,7 +538,7 @@ func TestHandleWebhook(t *testing.T) {
 
 			// Check the error metrics
 			for _, label := range []string{"read", "unmarshal", "start"} {
-				count, err := getCounterValue(tc.config.errCounter, label)
+				count, err := getCounterValue(tc.server.errCounter, label)
 				if err != nil {
 					t.Errorf("Failed to retrieve '%s' count from handleWebhook: %v", label, err)
 				} else if count > float64(tc.wantErrors) {
@@ -448,97 +546,5 @@ func TestHandleWebhook(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestHandleHealth(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest("GET", "/_health", nil)
-	w := httptest.NewRecorder()
-
-	handleHealth(w, req)
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Wrong response from handleHealth; got %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Errorf("Failed to read response from handleHealth: %v", err)
-	}
-	expected := "All systems are functioning within normal specifications.\n"
-	if string(body) != expected {
-		t.Errorf("Unexpected response body; got %s, want %s", string(body), expected)
-	}
-}
-
-func TestMergeConfigs(t *testing.T) {
-	t.Parallel()
-
-	a := &Config{
-		ListenAddr: "localhost:8080",
-		Verbose: false,
-		Commands: []*Command{
-			{Cmd: "echo"},
-		},
-	}
-
-	b := &Config{
-		ListenAddr: "localhost:8081",
-		Verbose: true,
-		Commands: []*Command{
-			{Cmd: "/bin/echo"},
-		},
-	}
-
-	merged := mergeConfigs(a, b)
-	if merged.ListenAddr != b.ListenAddr {
-		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", merged.ListenAddr, b.ListenAddr)
-	}
-	if merged.Verbose != b.Verbose {
-		t.Errorf("Wrong Verbose for merged config; got %v, want %v", merged.Verbose, b.Verbose)
-	}
-
-	allCmds := make([]*Command, 0)
-	allCmds = append(allCmds, a.Commands...)
-	allCmds = append(allCmds, b.Commands...)
-	for _, cmd := range allCmds {
-		if !merged.HasCommand(cmd) {
-			t.Errorf("Missing command %#v", cmd)
-		}
-	}
-
-	yamlFile := `---
-listen_address: ":23222"
-verbose: false
-commands:
-  - cmd: echo
-    args: ["banana", "tomato"]
-    match_labels:
-      "env": "testing"
-      "owner": "me"
-  - cmd: /bin/true
-    match_labels:
-      "beep": "boop"
-`
-	yamlConf := &Config{}
-	err := yaml.Unmarshal([]byte(yamlFile), yamlConf)
-	if err != nil {
-		t.Errorf("Failed to unmarshal yaml config file; %v", err)
-	}
-
-	mergedAgain := mergeConfigs(merged, yamlConf)
-
-	if mergedAgain.ListenAddr != yamlConf.ListenAddr {
-		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", mergedAgain.ListenAddr, yamlConf.ListenAddr)
-	}
-	if mergedAgain.Verbose != (merged.Verbose || yamlConf.Verbose) {
-		t.Errorf("Wrong Verbose for merged config; got %v, want %v", mergedAgain.Verbose, (merged.Verbose || yamlConf.Verbose))
-	}
-
-	allCmds = append(allCmds, yamlConf.Commands...)
-	for _, cmd := range allCmds {
-		if !mergedAgain.HasCommand(cmd) {
-			t.Errorf("Missing command %#v", cmd)
-		}
 	}
 }

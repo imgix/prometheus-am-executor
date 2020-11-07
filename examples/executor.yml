@@ -1,14 +1,25 @@
 ---
+# Listen on this <IP|all>:<TCP port>
 listen_address: ":23222"
+# Display more output
 verbose: false
+# Uncomment these settings to use TLS
 # tls_key: "certs/key.pem"
 # tls_crt: "certs/cert.pem"
 commands:
   - cmd: echo
     args: ["banana", "tomato"]
+    # Only execute this command for alerts that match these labels
     match_labels:
       "env": "testing"
       "owner": "me"
+    # Set to false to prevent non-zero exit codes from this command, from notifying alertmanager that the command failed.
+    # Notifying alertmanager (HTTP 500) is likely to re-dispatch the alarm back to am-executor.
+    notify_on_failure: false
+  # This command matches every alert
   - cmd: /bin/true
-    match_labels:
-      "beep": "boop"
+    # Maximum instances of this command that can be running at the same time.
+    max: 3
+    # Don't interrupt command if a matching 'resolved' message is
+    # sent from alertmanager while this command is still running.
+    ignore_resolved: true
