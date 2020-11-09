@@ -6,9 +6,36 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 )
+
+const (
+	// Enum mask for kinds of results
+	CmdOk       Result = 1 << iota
+	CmdFail     Result = 1 << iota
+	CmdKillOk   Result = 1 << iota
+	CmdKillFail Result = 1 << iota
+	CmdSkipKill Result = 1 << iota
+)
+
+var (
+	ResultStrings = map[Result]string{
+		CmdOk:       "Ok",
+		CmdFail:     "Fail",
+		CmdKillOk:   "KillOk",
+		CmdKillFail: "KillFail",
+		CmdSkipKill: "SkipKill",
+	}
+)
+
+type Result int
+
+type CommandResult struct {
+	Kind Result
+	Err  error
+}
 
 // Command represents a command that could be run based on what labels match
 type Command struct {
@@ -30,6 +57,41 @@ type Command struct {
 	// and continue running to completion.
 	// Defaults to false.
 	IgnoreResolved *bool `yaml:"ignore_resolved,omitempty"`
+}
+
+// Return a string representing the result state
+func (r Result) String() string {
+	var has = make([]string, 0)
+
+	// To keep the string's content consistent, we'll sort the flags by the enum value, lowest to highest.
+	var index = make(map[string]Result)
+	for f, n := range ResultStrings {
+		index[n] = f
+	}
+
+	less := func(i, j int) bool {
+		iKey := has[i]
+		jKey := has[j]
+		if index[iKey] < index[jKey] {
+			return true
+		} else {
+			return false
+		}
+	}
+
+	for f, n := range ResultStrings {
+		if r.Has(f) {
+			has = append(has, n)
+		}
+	}
+
+	sort.Slice(has, less)
+	return strings.Join(has, "|")
+}
+
+// Has returns true if the result has the given flag set
+func (r Result) Has(flag Result) bool {
+	return r&flag != 0
 }
 
 // Equal returns true if the Command is identical to another Command
@@ -103,33 +165,40 @@ func (c Command) Matches(msg *template.Data) bool {
 }
 
 // Run executes the command, killing it if asked to quit early
-// err channel is used to send errors encountered when running or killing program
+// out channel is used to indicate the result of running or killing the program. May indicate errors.
 // quit channel is used to determine if execution should quit early
 // done channel is used to indicate to caller when execution has completed
-func (c Command) Run(err chan<- error, quit chan struct{}, done chan struct{}, env ...string) {
-	defer close(err)
+func (c Command) Run(out chan<- CommandResult, quit chan struct{}, done chan struct{}, env ...string) {
+	defer close(out)
 	defer close(done)
 	var wg sync.WaitGroup
 	cmd := c.WithEnv(env...)
-	out := make(chan error)
+	cmdOut := make(chan CommandResult)
 	wg.Add(1)
 	go func() {
-		defer close(out)
+		defer close(cmdOut)
 		defer wg.Done()
-		e := cmd.Run()
-		if e != nil && c.ShouldNotify() {
-			out <- e
+		err := cmd.Run()
+		if err == nil {
+			cmdOut <- CommandResult{Kind: CmdOk, Err: nil}
+		} else {
+			cmdOut <- CommandResult{Kind: CmdFail, Err: err}
 		}
 	}()
 
 	select {
-	case e := <-out:
-		err <- e
+	case r := <-cmdOut:
+		out <- r
 	case <-quit:
-		if !c.ShouldIgnoreResolved() {
-			e := cmd.Process.Kill()
-			if e != nil && c.ShouldNotify() {
-				err <- fmt.Errorf("Failed to kill pid %d for command %s: %w", cmd.Process.Pid, c, e)
+		if c.ShouldIgnoreResolved() {
+			out <- CommandResult{Kind: CmdSkipKill, Err: nil}
+		} else {
+			err := cmd.Process.Kill()
+			if err == nil {
+				out <- CommandResult{Kind: CmdKillOk, Err: nil}
+			} else {
+				errMsg := fmt.Errorf("Failed to kill pid %d for command %s: %w", cmd.Process.Pid, c, err)
+				out <- CommandResult{Kind: CmdKillFail, Err: errMsg}
 			}
 		}
 	}
@@ -160,6 +229,9 @@ func (c Command) ShouldNotify() bool {
 
 // String returns a string representation of the command
 func (c Command) String() string {
+	if len(c.Args) == 0 {
+		return c.Cmd
+	}
 	return fmt.Sprintf("%s %s", c.Cmd, strings.Join(c.Args, " "))
 }
 

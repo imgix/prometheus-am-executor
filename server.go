@@ -55,10 +55,10 @@ type Server struct {
 	// Alarms without a fingerprint aren't tracked by the map.
 	tellFingers *chanmap.ChannelMap
 	// A mapping of an alarm fingerprint to the number of commands being executed for it.
-	// This is used to determine if a command should execute.
+	// This is compared to the Command.Max value to determine if a command should execute.
 	fingerCount *countermap.Counter
 	// An instance of metrics registry.
-	// We use this instead of the default, because it only allows one instance of metrics to be registered.
+	// We use this instead of the default, because the default only allows one instance of metrics to be registered.
 	registry        *prometheus.Registry
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
@@ -144,7 +144,11 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 	var env = amDataToEnv(amMsg)
 
 	// Execute our commands, and wait for them to return
-	var cmdErrors = make([]chan error, 0)
+	type future struct {
+		cmd *Command
+		out chan CommandResult
+	}
+	var futures = make([]future, 0)
 	for _, cmd := range s.config.Commands {
 		ok, reason := s.CanRun(cmd, amMsg)
 		if !ok {
@@ -159,20 +163,25 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 		}
 
 		fingerprint, _ := cmd.Fingerprint(amMsg)
-		out := make(chan error, 1)
-		cmdErrors = append(cmdErrors, out)
+		out := make(chan CommandResult, 1)
+		futures = append(futures, future{cmd: cmd, out: out})
 		go s.instrument(fingerprint, cmd, env, out)
 	}
 
 	// Collect errors from our commands, which also has us wait for all commands to finish
 	var errors = make([]error, 0)
-	for len(cmdErrors) > 0 {
-		out := cmdErrors[0]
-		cmdErrors = cmdErrors[1:]
-		for err := range out {
-			if err != nil {
-				errors = append(errors, err)
+	for len(futures) > 0 {
+		f := futures[0]
+		futures = futures[1:]
+		var resultState Result
+		for result := range f.out {
+			resultState = resultState | result.Kind
+			if result.Kind == CmdFail && result.Err != nil && f.cmd.ShouldNotify() {
+				errors = append(errors, result.Err)
 			}
+		}
+		if s.config.Verbose {
+			log.Printf("Command: %s, result: %s", f.cmd.String(), resultState)
 		}
 	}
 
@@ -245,7 +254,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 //
 // The prometheus structs use sync/atomic in methods like Dec and Observe,
 // so they're safe to call concurrently from goroutines.
-func (s *Server) instrument(fingerprint string, cmd *Command, env []string, err chan<- error) {
+func (s *Server) instrument(fingerprint string, cmd *Command, env []string, out chan<- CommandResult) {
 	s.processCurrent.Inc()
 	defer s.processCurrent.Dec()
 	var quit chan struct{}
@@ -262,7 +271,7 @@ func (s *Server) instrument(fingerprint string, cmd *Command, env []string, err 
 
 	done := make(chan struct{})
 	start := time.Now()
-	cmd.Run(err, quit, done, env...)
+	cmd.Run(out, quit, done, env...)
 	<-done
 	s.processDuration.Observe(time.Since(start).Seconds())
 }

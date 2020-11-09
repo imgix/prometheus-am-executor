@@ -3,10 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"gopkg.in/yaml.v2"
+	"github.com/juju/testing/checkers"
+	"github.com/prometheus/alertmanager/template"
+	"github.com/prometheus/client_golang/prometheus"
+	pm "github.com/prometheus/client_model/go"
 	"io/ioutil"
-	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,11 +15,6 @@ import (
 	"sort"
 	"testing"
 	"time"
-
-	"github.com/juju/testing/checkers"
-	"github.com/prometheus/alertmanager/template"
-	"github.com/prometheus/client_golang/prometheus"
-	pm "github.com/prometheus/client_model/go"
 )
 
 var (
@@ -153,7 +149,7 @@ func Test_amDataToEnv(t *testing.T) {
 		sort.Strings(expectedEnv)
 
 		if ok, err := checkers.DeepEqual(env, expectedEnv); !ok {
-			log.Fatal(err)
+			t.Fatal(err)
 		}
 	}
 }
@@ -175,270 +171,6 @@ func Test_handleHealth(t *testing.T) {
 	expected := "All systems are functioning within normal specifications.\n"
 	if string(body) != expected {
 		t.Errorf("Unexpected response body; got %s, want %s", string(body), expected)
-	}
-}
-
-func Test_mergeConfigs(t *testing.T) {
-	t.Parallel()
-
-	a := &Config{
-		ListenAddr: "localhost:8080",
-		Verbose:    false,
-		Commands: []*Command{
-			{Cmd: "echo"},
-		},
-	}
-
-	b := &Config{
-		ListenAddr: "localhost:8081",
-		Verbose:    true,
-		Commands: []*Command{
-			{Cmd: "/bin/echo"},
-		},
-	}
-
-	merged := mergeConfigs(a, b)
-	if merged.ListenAddr != b.ListenAddr {
-		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", merged.ListenAddr, b.ListenAddr)
-	}
-	if merged.Verbose != b.Verbose {
-		t.Errorf("Wrong Verbose for merged config; got %v, want %v", merged.Verbose, b.Verbose)
-	}
-
-	allCmds := make([]*Command, 0)
-	allCmds = append(allCmds, a.Commands...)
-	allCmds = append(allCmds, b.Commands...)
-	for _, cmd := range allCmds {
-		if !merged.HasCommand(cmd) {
-			t.Errorf("Missing command %#v", cmd)
-		}
-	}
-
-	yamlFile := `---
-listen_address: ":23222"
-verbose: false
-commands:
-  - cmd: echo
-    args: ["banana", "tomato"]
-    match_labels:
-      "env": "testing"
-      "owner": "me"
-  - cmd: /bin/true
-    match_labels:
-      "beep": "boop"
-`
-	yamlConf := &Config{}
-	err := yaml.Unmarshal([]byte(yamlFile), yamlConf)
-	if err != nil {
-		t.Errorf("Failed to unmarshal yaml config file; %v", err)
-	}
-
-	mergedAgain := mergeConfigs(merged, yamlConf)
-
-	if mergedAgain.ListenAddr != yamlConf.ListenAddr {
-		t.Errorf("Wrong ListenAddr for merged config; got %s, want %s", mergedAgain.ListenAddr, yamlConf.ListenAddr)
-	}
-	if mergedAgain.Verbose != (merged.Verbose || yamlConf.Verbose) {
-		t.Errorf("Wrong Verbose for merged config; got %v, want %v", mergedAgain.Verbose, (merged.Verbose || yamlConf.Verbose))
-	}
-
-	allCmds = append(allCmds, yamlConf.Commands...)
-	for _, cmd := range allCmds {
-		if !mergedAgain.HasCommand(cmd) {
-			t.Errorf("Missing command %#v", cmd)
-		}
-	}
-}
-
-func TestCommand_Equal(t *testing.T) {
-	cases := []struct {
-		name string
-		a    *Command
-		b    *Command
-		want bool
-	}{
-		{
-			name: "same",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			b: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			want: true,
-		},
-		{
-			name: "different_cmd",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			b: &Command{
-				Cmd:         "/bin/echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			want: false,
-		},
-		{
-			name: "different_arg_len",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			b: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			want: false,
-		},
-		{
-			name: "different_args",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "pineapple"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			b: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			want: false,
-		},
-		{
-			name: "different_labels_len",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test"},
-			},
-			b: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			want: false,
-		},
-		{
-			name: "different_labels",
-			a: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"env": "test", "owner": "me"},
-			},
-			b: &Command{
-				Cmd:         "echo",
-				Args:        []string{"banana", "lemon"},
-				MatchLabels: map[string]string{"owner": "me"},
-			},
-			want: false,
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc // Capture range variable, for use in anonymous function
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			var condition_word string
-			if tc.want {
-				condition_word = "should have been equal"
-			} else {
-				condition_word = "should not have been equal"
-			}
-
-			if tc.a.Equal(tc.b) != tc.want {
-				t.Errorf("Commands %s", condition_word)
-			}
-		})
-	}
-}
-
-func TestCommand_Matches(t *testing.T) {
-	t.Parallel()
-	noMatching := make(map[string]string)
-	noMatching["banana"] = "ok"
-
-	allMatching := make(map[string]string)
-	// Randomly pick between 1 and all labels to include in allMatching
-	available := alertManagerData.CommonLabels.Names()
-	rand.Shuffle(len(available), func(i, j int) {
-		available[i], available[j] = available[j], available[i]
-	})
-	for _, l := range available[0 : rand.Intn(len(available))+1] {
-		allMatching[l] = alertManagerData.CommonLabels[l]
-	}
-
-	someMatching := make(map[string]string)
-	for k, v := range noMatching {
-		someMatching[k] = v
-	}
-	for k, v := range allMatching {
-		someMatching[k] = v
-	}
-
-	cases := []struct {
-		cmd  *Command
-		want bool
-	}{
-		// No labels defined should have command match all alerts
-		{
-			cmd:  &Command{Cmd: "echo"},
-			want: true,
-		},
-		// Labels that don't match means command should not match the alert
-		{
-			cmd:  &Command{Cmd: "echo", MatchLabels: noMatching},
-			want: false,
-		},
-		// When all labels match, the command should match the alert
-		{
-			cmd:  &Command{Cmd: "echo", MatchLabels: allMatching},
-			want: true,
-		},
-		// All labels need to match, for the command to match the alert
-		{
-			cmd:  &Command{Cmd: "echo", MatchLabels: someMatching},
-			want: false,
-		},
-	}
-
-	for i, tc := range cases {
-		var condition_word string
-		if tc.want {
-			condition_word = "should have"
-		} else {
-			condition_word = "should not have"
-		}
-		if tc.cmd.Matches(&alertManagerData) != tc.want {
-			t.Errorf("Case %d command %s matched alert; command labels %#v, alert labels %#v",
-				i, condition_word, tc.cmd.MatchLabels, alertManagerData.CommonLabels)
-		}
-	}
-}
-
-func TestConfig_HasCommand(t *testing.T) {
-	t.Parallel()
-	a := &Command{
-		Cmd:         "echo",
-		Args:        []string{"banana", "lemon"},
-		MatchLabels: map[string]string{"env": "test", "owner": "me"},
-	}
-
-	c := Config{}
-	if c.HasCommand(a) {
-		t.Errorf("Config should not have command")
-	}
-	c.Commands = append(c.Commands, a)
-	if !c.HasCommand(a) {
-		t.Errorf("Config should have command")
 	}
 }
 
