@@ -133,22 +133,22 @@ commands:
 	// We can create pointers to variables, but not to primitive values like true/false directly.
 	var alsoTrue = true
 	var alsoFalse = false
-	var cases = []struct{
-		cmd *Command
-		shouldNotify bool
+	var cases = []struct {
+		cmd                  *Command
+		shouldNotify         bool
 		shouldIgnoreResolved bool
 	}{
 		{
 			cmd: &Command{
-				Cmd: "echo",
+				Cmd:  "echo",
 				Args: []string{"banana", "tomato"},
 				MatchLabels: map[string]string{
-					"env": "testing",
+					"env":   "testing",
 					"owner": "me",
 				},
 				NotifyOnFailure: &alsoFalse,
 			},
-			shouldNotify: false,
+			shouldNotify:         false,
 			shouldIgnoreResolved: false,
 		},
 		{
@@ -159,7 +159,7 @@ commands:
 				},
 				IgnoreResolved: &alsoTrue,
 			},
-			shouldNotify: true,
+			shouldNotify:         true,
 			shouldIgnoreResolved: true,
 		},
 	}

@@ -225,6 +225,9 @@ func TestCounter_Start(t *testing.T) {
 }
 
 func TestCounter_Stop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping due to -test.short flag")
+	}
 	t.Parallel()
 	var c = NewCounter()
 	var threshold = time.Duration(4) * time.Second

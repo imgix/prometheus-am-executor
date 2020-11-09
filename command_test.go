@@ -267,7 +267,7 @@ func TestCommand_Fingerprint(t *testing.T) {
 		tc := tc // Capture range variable, for use in anonymous function
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			f, ok := tc.cmd.Fingerprint(&alertManagerData)
+			f, ok := tc.cmd.Fingerprint(&amData)
 			if f != tc.fingerprint {
 				t.Errorf("wrong fingerprint; got '%s', want '%s'", f, tc.fingerprint)
 			}
@@ -285,12 +285,12 @@ func TestCommand_Matches(t *testing.T) {
 
 	allMatching := make(map[string]string)
 	// Randomly pick between 1 and all labels to include in allMatching
-	available := alertManagerData.CommonLabels.Names()
+	available := amData.CommonLabels.Names()
 	rand.Shuffle(len(available), func(i, j int) {
 		available[i], available[j] = available[j], available[i]
 	})
 	for _, l := range available[0 : rand.Intn(len(available))+1] {
-		allMatching[l] = alertManagerData.CommonLabels[l]
+		allMatching[l] = amData.CommonLabels[l]
 	}
 
 	someMatching := make(map[string]string)
@@ -334,9 +334,9 @@ func TestCommand_Matches(t *testing.T) {
 		} else {
 			condition_word = "should not have"
 		}
-		if tc.cmd.Matches(&alertManagerData) != tc.want {
+		if tc.cmd.Matches(&amData) != tc.want {
 			t.Errorf("Case %d command %s matched alert; command labels %#v, alert labels %#v",
-				i, condition_word, tc.cmd.MatchLabels, alertManagerData.CommonLabels)
+				i, condition_word, tc.cmd.MatchLabels, amData.CommonLabels)
 		}
 	}
 }
