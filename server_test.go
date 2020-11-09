@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/juju/testing/checkers"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,6 +15,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,6 +119,32 @@ var (
 		CommonAnnotations: template.KV{},
 		ExternalURL:       "http://oldpad:9093",
 	}
+
+	amDataFingerResolved = template.Data{
+		Receiver: "default", Status: "resolved", Alerts: template.Alerts{
+			template.Alert{Status: "resolved", Labels: template.KV{
+				"job":       "broken",
+				"monitor":   "codelab-monitor",
+				"alertname": "InstanceDown",
+				"instance":  "localhost:5678",
+			},
+				Annotations:  template.KV{},
+				StartsAt:     time.Unix(1460045332, 0),
+				EndsAt:       time.Time{},
+				GeneratorURL: "http://oldpad:9090/graph#%5B%7B%22expr%22%3A%22up%20%3D%3D%200%22%2C%22tab%22%3A0%7D%5D",
+				Fingerprint:  "boop",
+			},
+		},
+		GroupLabels: template.KV{"alertname": "InstanceDown"},
+		CommonLabels: template.KV{
+			"alertname": "InstanceDown",
+			"instance":  "localhost:5678",
+			"job":       "broken",
+			"monitor":   "codelab-monitor",
+		},
+		CommonAnnotations: template.KV{},
+		ExternalURL:       "http://oldpad:9093",
+	}
 )
 
 // genServer returns a test server for the prometheus-am-executor.
@@ -132,20 +161,14 @@ func genServer() (*Server, error) {
 	return s, err
 }
 
-// getCounterValue digs through nested prometheus structs to retrieve a metric's value
-func getCounterValue(cv *prometheus.CounterVec, labels ...string) (float64, error) {
-	c, err := cv.GetMetricWithLabelValues(labels...)
+// getCounterValue returns a metric's value
+func getCounterValue(cv *prometheus.CounterVec, label string) (float64, error) {
+	var m = &pm.Metric{}
+	err := cv.WithLabelValues(label).Write(m)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
-
-	var metric pm.Metric
-	err = c.Write(&metric)
-	if err != nil {
-		return 0, err
-	}
-
-	return metric.GetCounter().GetValue(), nil
+	return m.Counter.GetValue(), nil
 }
 
 // RandLoopAddr returns an available loopback address and TCP port
@@ -166,6 +189,42 @@ func RandLoopAddr() (string, error) {
 	}()
 
 	return ln.Addr().String(), nil
+}
+
+// WaitForGetSuccess retries a request occasionally until it either succeeds or times-out.
+func WaitForGetSuccess(url string) (*http.Response, error) {
+	var wg sync.WaitGroup
+	expiry := time.NewTimer(time.Duration(4) * time.Second)
+	interval := time.NewTicker(time.Duration(200) * time.Millisecond)
+	defer wg.Wait()
+	defer expiry.Stop()
+	defer interval.Stop()
+	out := make(chan *http.Response, 1)
+
+	wg.Add(1)
+	go func() {
+		defer close(out)
+		defer wg.Done()
+		for {
+			select {
+			case <-expiry.C:
+				return
+			case <-interval.C:
+				resp, err := http.Get(url)
+				if err == nil {
+					out <- resp
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-expiry.C:
+		return nil, fmt.Errorf("Timed-out while waiting for successful request to %s", url)
+	case r := <-out:
+		return r, nil
+	}
 }
 
 func Test_amDataToEnv(t *testing.T) {
@@ -201,36 +260,116 @@ func Test_handleHealth(t *testing.T) {
 	}
 }
 
+func Test_handleMetrics(t *testing.T) {
+	t.Parallel()
+	srv, err := genServer()
+	if err != nil {
+		t.Fatal("Failed to generate server")
+	}
+	httpSrv, _ := srv.Start()
+	defer func() {
+		_ = stopServer(httpSrv)
+	}()
+
+	time.Sleep(time.Duration(1) * time.Second)
+	var path = "/metrics"
+	resp, err := WaitForGetSuccess("http://" + srv.config.ListenAddr + path)
+	if err != nil {
+		t.Fatalf("Failed to get metrics: %v", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	var sep = "_"
+	var found = map[string]bool{
+		strings.Join([]string{
+			metricNamespace,
+			procDurationOpts.Subsystem,
+			procDurationOpts.Name}, sep): false,
+		strings.Join([]string{
+			metricNamespace,
+			procCurrentOpts.Subsystem,
+			procCurrentOpts.Name}, sep): false,
+		strings.Join([]string{
+			metricNamespace,
+			errCountOpts.Subsystem,
+			errCountOpts.Name}, sep): false,
+		strings.Join([]string{
+			metricNamespace,
+			killCountOpts.Subsystem,
+			killCountOpts.Name}, sep): false,
+		strings.Join([]string{
+			metricNamespace,
+			skipCountOpts.Subsystem,
+			skipCountOpts.Name}, sep): false,
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		for want, ok := range found {
+			if ok {
+				continue
+			}
+			if strings.Contains(line, want) {
+				found[want] = true
+			}
+		}
+	}
+
+	missing := make([]string, 0)
+	for want, ok := range found {
+		if !ok {
+			missing = append(missing, want)
+		}
+	}
+
+	if len(missing) > 0 {
+		t.Errorf("Missing in '%s' output: %s", path, strings.Join(missing, ", "))
+	}
+}
+
 func Test_handleWebhook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping due to -test.short flag")
+	}
 	if runtime.GOOS == "aix" || runtime.GOOS == "android" || runtime.GOOS == "illumos" || runtime.GOOS == "js" ||
 		runtime.GOOS == "plan9" || runtime.GOOS == "windows" {
 		t.Skip("Skip on platforms without 'false' or 'sleep' commands available")
 	}
 
 	// We can create pointers to variables, but not to primitive values like true/false directly.
+	var alsoTrue = true
 	var alsoFalse = false
 
-	payload, err := json.Marshal(&amData)
+	trigger, err := json.Marshal(&amDataFinger)
 	if err != nil {
-		t.Fatal("Failed to encode amData as JSON")
+		t.Fatal("Failed to encode amDataFinger as JSON")
+	}
+
+	resolve, err := json.Marshal(&amDataFingerResolved)
+	if err != nil {
+		t.Fatal("Failed to encode amDataFingerResolve as JSON")
 	}
 
 	cases := []struct {
 		name           string
 		commands       []*Command
-		req            *http.Request
-		w              *httptest.ResponseRecorder
-		wantStatusCode int
-		wantErrors     int
+		reqs           []*http.Request
+		statusCode     int
+		errors         int
+		killed         int
+		skipped        int
+		stillRunningOk bool
 	}{
 		// The httptest.NewRequest() call sends a request to handleWebhook
 		{
-			name:           "good",
-			commands:       []*Command{{Cmd: "echo"}},
-			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
-			w:              httptest.NewRecorder(),
-			wantStatusCode: http.StatusOK,
-			wantErrors:     0,
+			name:       "good",
+			commands:   []*Command{{Cmd: "echo"}},
+			reqs:       []*http.Request{httptest.NewRequest("GET", "/", bytes.NewReader(trigger))},
+			statusCode: http.StatusOK,
+			errors:     0,
 		},
 		// We'll expect 2 errors based on these commands
 		{
@@ -239,10 +378,9 @@ func Test_handleWebhook(t *testing.T) {
 				{Cmd: "false"},
 				{Cmd: "false", Args: []string{"banana"}},
 			},
-			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
-			w:              httptest.NewRecorder(),
-			wantStatusCode: http.StatusInternalServerError,
-			wantErrors:     2,
+			reqs:       []*http.Request{httptest.NewRequest("GET", "/", bytes.NewReader(trigger))},
+			statusCode: http.StatusInternalServerError,
+			errors:     2,
 		},
 		// We'll expect 0 errors due to NotifyOnFailure being False
 		{
@@ -251,17 +389,47 @@ func Test_handleWebhook(t *testing.T) {
 				{Cmd: "false", NotifyOnFailure: &alsoFalse},
 				{Cmd: "false", Args: []string{"banana"}, NotifyOnFailure: &alsoFalse},
 			},
-			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
-			w:              httptest.NewRecorder(),
-			wantStatusCode: http.StatusOK,
-			wantErrors:     0,
+			reqs:       []*http.Request{httptest.NewRequest("GET", "/", bytes.NewReader(trigger))},
+			statusCode: http.StatusOK,
+			errors:     0,
 		},
+		// We'll expect 0 errors due to command being killed by being resolved
+		{
+			name:       "resolved",
+			commands:   []*Command{{Cmd: "sleep", Args: []string{"4s"}}},
+			reqs:       []*http.Request{
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+				httptest.NewRequest("GET", "/", bytes.NewReader(resolve)),
+			},
+			statusCode: http.StatusOK,
+			errors:     0,
+			killed:     1,
+		},
+		// Expect no error due to command not being killed by being resolved, because IgnoreResolved is true
+		{
+			name:           "ignore_resolved",
+			commands:       []*Command{{Cmd: "sleep", Args: []string{"4s"}, IgnoreResolved: &alsoTrue}},
+			reqs:       []*http.Request{
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+				httptest.NewRequest("GET", "/", bytes.NewReader(resolve)),
+			},
+			statusCode:     http.StatusOK,
+			errors:         0,
+			killed:         0,
+			stillRunningOk: true,
+		},
+
+		// Expect 0 skipped due to no Max
+		// Expect 1 skipped due to Max being exceeded
 	}
 
 	for _, tc := range cases {
 		tc := tc // Capture range variable, for use in anonymous function
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			if tc.name != "resolved" {
+				return // TODO
+			}
 
 			srv, err := genServer()
 			if err != nil {
@@ -273,22 +441,38 @@ func Test_handleWebhook(t *testing.T) {
 			}()
 
 			srv.config.Commands = tc.commands
-			srv.handleWebhook(tc.w, tc.req)
+
+			// We'll make a second request, if it is defined
+			var req  *http.Request
+			var resp *http.Response
+			for i, r := range tc.reqs {
+				req = r
+				w := httptest.NewRecorder()
+				if len(tc.reqs) > 1 && i != len(tc.reqs) - 1 {
+					// If we're not the last command, we just issue the request and keep going
+					go srv.handleWebhook(w, req)
+					// Give some time for effects of request to take place (process starting, being killed, etc)
+					time.Sleep(time.Duration(500) * time.Millisecond)
+					continue
+				}
+				srv.handleWebhook(w, req)
+				resp = w.Result()
+			}
+			time.Sleep(time.Duration(500) * time.Millisecond)
 
 			// Check response of request
-			resp := tc.w.Result()
-			if resp.StatusCode != tc.wantStatusCode {
-				t.Errorf("Wrong response from handleWebhook; got %d, want %d", resp.StatusCode, tc.wantStatusCode)
+			if resp.StatusCode != tc.statusCode {
+				t.Errorf("Wrong response from handleWebhook; got %d, want %d", resp.StatusCode, tc.statusCode)
 			}
 
 			// Check the process duration metric
 			var pdMetric pm.Metric
 			err = srv.processDuration.Write(&pdMetric)
 			if err != nil {
-				t.Errorf("Failed to retrieve processDuration metric from handleWebhook: %v", err)
+				t.Fatalf("Failed to retrieve processDuration metric from handleWebhook: %v", err)
 			}
 			durationCount := pdMetric.GetHistogram().GetSampleCount()
-			if durationCount == 0 {
+			if !tc.stillRunningOk && durationCount == 0 {
 				t.Errorf("handleWebhook didn't observe processDuration metric samples")
 			}
 
@@ -296,21 +480,45 @@ func Test_handleWebhook(t *testing.T) {
 			var pcMetric pm.Metric
 			err = srv.processCurrent.Write(&pcMetric)
 			if err != nil {
-				t.Errorf("Failed to retrieve processCurrent metric from handleWebhook: %v", err)
+				t.Fatalf("Failed to retrieve processCurrent metric from handleWebhook: %v", err)
 			}
 			current := pcMetric.GetGauge().GetValue()
-			if current > 0 {
+			if !tc.stillRunningOk && current > 0 {
 				t.Errorf("handleWebhook metric says process is still running; got %f, want %d", current, 0)
 			}
 
 			// Check the error metrics
-			for _, label := range []string{"read", "unmarshal", "start"} {
-				count, err := getCounterValue(srv.errCounter, label)
+			count, err := getCounterValue(srv.errCounter, ErrLabelStart)
+			if err != nil {
+				t.Fatalf("Failed to retrieve '%s' error count: %v", ErrLabelStart, err)
+			} else if count != float64(tc.errors) {
+				t.Errorf("Wrong error count for '%s'; got %f, want %d", ErrLabelStart, count, tc.errors)
+			}
+
+			// Check killed metrics
+			count, err = getCounterValue(srv.killCounter, KillLabelOk)
+			if err != nil {
+				t.Fatalf("Failed to retrieve '%s' kill count: %v", "ok", err)
+			} else if count != float64(tc.killed) {
+				t.Errorf("Wrong kill count for '%s'; got %f, want %d", "ok", count, tc.killed)
+			}
+
+			// Check skipped metrics
+			skipLabels := make([]string, 0)
+			for _, v := range CmdRunLabel {
+				skipLabels = append(skipLabels, v)
+			}
+
+			var skipped float64
+			for _, label := range skipLabels {
+				count, err := getCounterValue(srv.skipCounter, label)
 				if err != nil {
-					t.Errorf("Failed to retrieve '%s' count from handleWebhook: %v", label, err)
-				} else if count > float64(tc.wantErrors) {
-					t.Errorf("handleWebhook registered '%s' errors; got %f, want %d", label, count, tc.wantErrors)
+					t.Fatalf("Failed to retrieve '%s' skip count: %v", label, err)
 				}
+				skipped += count
+			}
+			if skipped != float64(tc.skipped) {
+				t.Errorf("Wrong skipped count; got %f, want %d", skipped, tc.skipped)
 			}
 		})
 	}
@@ -334,16 +542,18 @@ func TestServer_CanRun(t *testing.T) {
 		name    string
 		command Command
 		data    *template.Data
-		want    bool
+		ok      bool
+		reason  CmdRunReason
 		before  func()
 		after   func()
 	}{
 		// Can run because no labels are defined
 		{
 			name:    "no_labels",
-			command: Command{Cmd: "echo"},
+			command: Command{Cmd: "echo", Max: 99},
 			data:    &amData,
-			want:    true,
+			ok:      true,
+			reason:  CmdRunNoFinger,
 			before:  pass,
 			after:   pass,
 		},
@@ -358,7 +568,8 @@ func TestServer_CanRun(t *testing.T) {
 				},
 			},
 			data:   &amData,
-			want:   false,
+			ok:     false,
+			reason: CmdRunNoLabelMatch,
 			before: pass,
 			after:  pass,
 		},
@@ -374,7 +585,8 @@ func TestServer_CanRun(t *testing.T) {
 				Max: -1,
 			},
 			data:   &amDataFinger,
-			want:   true,
+			ok:     true,
+			reason: CmdRunNoMax,
 			before: boop10,
 			after:  reset,
 		},
@@ -390,7 +602,8 @@ func TestServer_CanRun(t *testing.T) {
 				Max: 2,
 			},
 			data:   &amData,
-			want:   true,
+			ok:     true,
+			reason: CmdRunNoFinger,
 			before: boop10,
 			after:  reset,
 		},
@@ -406,7 +619,8 @@ func TestServer_CanRun(t *testing.T) {
 				Max: 11,
 			},
 			data:   &amDataFinger,
-			want:   true,
+			ok:     true,
+			reason: CmdRunFingerUnder,
 			before: boop10,
 			after:  reset,
 		},
@@ -422,7 +636,8 @@ func TestServer_CanRun(t *testing.T) {
 				Max: 2,
 			},
 			data:   &amDataFinger,
-			want:   false,
+			ok:     false,
+			reason: CmdRunFingerOver,
 			before: boop10,
 			after:  reset,
 		},
@@ -435,8 +650,11 @@ func TestServer_CanRun(t *testing.T) {
 			tc.before()
 			defer tc.after()
 			ok, reason := srv.CanRun(&tc.command, tc.data)
-			if ok != tc.want {
-				t.Errorf("Wrong result with reason '%s'; got %v, want %v", reason, ok, tc.want)
+			if ok != tc.ok {
+				t.Errorf("Wrong answer with reason '%s'; got %v, want %v", reason, ok, tc.ok)
+			}
+			if reason != tc.reason {
+				t.Errorf("Wrong reason; got '%s', want '%s'", reason, tc.reason)
 			}
 		})
 	}

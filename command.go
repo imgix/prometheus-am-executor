@@ -173,7 +173,10 @@ func (c Command) Run(out chan<- CommandResult, quit chan struct{}, done chan str
 	defer close(done)
 	var wg sync.WaitGroup
 	cmd := c.WithEnv(env...)
-	cmdOut := make(chan CommandResult)
+	// We use a buffer of one, so that if the command is killed before it finishes,
+	// We will still be able to close the channel, and end the Command.Run method;
+	// There won't be a reader left, because the select statement ended when quit was read from.
+	cmdOut := make(chan CommandResult, 1)
 	wg.Add(1)
 	go func() {
 		defer close(cmdOut)

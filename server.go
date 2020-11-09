@@ -8,20 +8,55 @@ import (
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	pm "github.com/prometheus/client_model/go"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+const (
+	// Enum for reasons of why a command could or couldn't run
+	CmdRunNoLabelMatch CmdRunReason = iota
+	CmdRunNoMax
+	CmdRunNoFinger
+	CmdRunFingerUnder
+	CmdRunFingerOver
 )
 
 const (
 	// Namespace for prometheus metrics produced by this program
 	metricNamespace = "am_executor"
+
+	ErrLabelRead       = "read"
+	ErrLabelUnmarshall = "unmarshal"
+	ErrLabelStart      = "start"
+	KillLabelOk        = "ok"
+	KillLabelFail      = "fail"
 )
 
 var (
+	CmdRunDesc = map[CmdRunReason]string{
+		CmdRunNoLabelMatch: "No match for alert labels",
+		CmdRunNoMax:        "No maximum simultaneous command limit defined",
+		CmdRunNoFinger:     "No fingerprint found for command",
+		CmdRunFingerUnder:  "Command count for fingerprint is under limit",
+		CmdRunFingerOver:   "Command count for fingerprint is over limit",
+	}
+
+	// These labels are meant to be applied to prometheus metrics
+	CmdRunLabel = map[CmdRunReason]string{
+		CmdRunNoLabelMatch: "nomatch",
+		CmdRunNoMax:        "nomax",
+		CmdRunNoFinger:     "nofinger",
+		CmdRunFingerUnder:  "fingerunder",
+		CmdRunFingerOver:   "fingerover",
+	}
+
 	procDurationOpts = prometheus.HistogramOpts{
 		Namespace: metricNamespace,
 		Subsystem: "process",
@@ -44,8 +79,26 @@ var (
 		Help:      "Total number of errors while processing alerts.",
 	}
 
-	errCountLabels = []string{"stage"}
+	killCountOpts = prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Subsystem: "killed",
+		Name:      "total",
+		Help:      "Total number of active processes killed due to alarm resolving.",
+	}
+
+	skipCountOpts = prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Subsystem: "skipped",
+		Name:      "total",
+		Help:      "Total number of commands that were skipped instead of run for matching alerts.",
+	}
+
+	errCountLabels  = []string{"stage"}
+	killCountLabels = []string{"result"}
+	skipCountLabels = []string{"reason"}
 )
+
+type CmdRunReason int
 
 type Server struct {
 	config *Config
@@ -63,6 +116,10 @@ type Server struct {
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
 	errCounter      *prometheus.CounterVec
+	// Track number of active processes killed due to a 'resolved' message being received from alertmanager.
+	killCounter *prometheus.CounterVec
+	// Track number of commands skipped instead of run.
+	skipCounter *prometheus.CounterVec
 }
 
 // amDataToEnv converts prometheus alert manager template data into key=value strings,
@@ -139,8 +196,19 @@ func handleHealth(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// Label returns a prometheus-compatible label for a reason why a command could or couldn't run
+func (r CmdRunReason) Label() string {
+	return CmdRunLabel[r]
+}
+
+// String returns a string representation of the reason why a command could or couldn't run
+func (r CmdRunReason) String() string {
+	return CmdRunDesc[r]
+}
+
 // amFiring handles a triggered alert message from alertmanager
 func (s *Server) amFiring(amMsg *template.Data) []error {
+	var wg, collectWg sync.WaitGroup
 	var env = amDataToEnv(amMsg)
 
 	// Execute our commands, and wait for them to return
@@ -148,36 +216,32 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 		cmd *Command
 		out chan CommandResult
 	}
-	var futures = make([]future, 0)
-	for _, cmd := range s.config.Commands {
-		ok, reason := s.CanRun(cmd, amMsg)
-		if !ok {
-			// This is not a command we should run for this alert.
-			if s.config.Verbose {
-				log.Printf("Skipping command due to '%s': %s", reason, cmd)
-			}
-			continue
-		}
-		if s.config.Verbose {
-			log.Println("Executing:", cmd)
-		}
 
-		fingerprint, _ := cmd.Fingerprint(amMsg)
-		out := make(chan CommandResult, 1)
-		futures = append(futures, future{cmd: cmd, out: out})
-		go s.instrument(fingerprint, cmd, env, out)
-	}
+	// Aggregate error messages into a single channel
+	var errors = make(chan error)
+	var allErrors = make([]error, 0)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		collectWg.Wait()
+		close(errors)
+	}()
+	go func() {
+		defer wg.Done()
+		for err := range errors {
+			allErrors = append(allErrors, err)
+		}
+	}()
 
-	// Collect errors from our commands, which also has us wait for all commands to finish
-	var errors = make([]error, 0)
-	for len(futures) > 0 {
-		f := futures[0]
-		futures = futures[1:]
+	var collect = func(f future) {
+		defer collectWg.Done()
 		var resultState Result
 		for result := range f.out {
 			resultState = resultState | result.Kind
-			if result.Kind == CmdFail && result.Err != nil && f.cmd.ShouldNotify() {
-				errors = append(errors, result.Err)
+			// We don't consider errors from CmdKillOk or CmdKillFail states, as
+			// conditions that should be passed back to the caller.
+			if result.Kind.Has(CmdFail) && result.Err != nil && f.cmd.ShouldNotify() {
+				errors <- result.Err
 			}
 		}
 		if s.config.Verbose {
@@ -185,7 +249,31 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 		}
 	}
 
-	return errors
+	for _, cmd := range s.config.Commands {
+		ok, reason := s.CanRun(cmd, amMsg)
+		if !ok {
+			// This is not a command we should run for this alert.
+			if s.config.Verbose {
+				log.Printf("Skipping command due to '%s': %s", reason, cmd)
+			}
+			s.skipCounter.WithLabelValues(reason.Label()).Inc()
+			continue
+		}
+		if s.config.Verbose {
+			log.Println("Executing:", cmd)
+		}
+
+		fingerprint, _ := cmd.Fingerprint(amMsg)
+		out := make(chan CommandResult)
+		collectWg.Add(1)
+		go collect(future{cmd: cmd, out: out})
+		go s.instrument(fingerprint, cmd, env, out)
+	}
+
+	// Wait for instrumentation, error collection to finish
+	wg.Wait()
+
+	return allErrors
 }
 
 // amResolved handles a resolved alert message from alertmanager
@@ -213,7 +301,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		handleError(w, err)
-		s.errCounter.WithLabelValues("read").Inc()
+		s.errCounter.WithLabelValues(ErrLabelRead).Inc()
 		return
 	}
 
@@ -223,7 +311,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	var amMsg = &template.Data{}
 	if err := json.Unmarshal(data, amMsg); err != nil {
 		handleError(w, err)
-		s.errCounter.WithLabelValues("unmarshal").Inc()
+		s.errCounter.WithLabelValues(ErrLabelUnmarshall).Inc()
 		return
 	}
 	if s.config.Verbose {
@@ -245,8 +333,32 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 
 	if len(errors) > 0 {
 		handleError(w, concatErrors(errors...))
-		s.errCounter.WithLabelValues("start").Add(float64(len(errors)))
 	}
+}
+
+// initMetrics initializes prometheus metrics
+func (s *Server) initMetrics() error {
+	var pd, pc pm.Metric
+	err := s.processDuration.Write(&pd)
+	if err != nil {
+		return err
+	}
+
+	err = s.processCurrent.Write(&pc)
+	if err != nil {
+		return err
+	}
+
+	_ = s.errCounter.WithLabelValues(ErrLabelRead)
+	_ = s.errCounter.WithLabelValues(ErrLabelUnmarshall)
+	_ = s.errCounter.WithLabelValues(ErrLabelStart)
+	_ = s.killCounter.WithLabelValues(ErrLabelStart)
+	_ = s.killCounter.WithLabelValues(KillLabelOk)
+	_ = s.killCounter.WithLabelValues(KillLabelFail)
+	_ = s.skipCounter.WithLabelValues(CmdRunNoLabelMatch.Label())
+	_ = s.skipCounter.WithLabelValues(CmdRunFingerOver.Label())
+
+	return nil
 }
 
 // instrument a command.
@@ -270,33 +382,52 @@ func (s *Server) instrument(fingerprint string, cmd *Command, env []string, out 
 	}
 
 	done := make(chan struct{})
+	cmdOut := make(chan CommandResult)
+	// Intercept responses from commands, so that we can update metrics we're interested in
+	go func() {
+		defer close(out)
+		for r := range cmdOut {
+			if r.Kind.Has(CmdFail) && r.Err != nil && cmd.ShouldNotify() {
+				s.errCounter.WithLabelValues(ErrLabelStart).Inc()
+			}
+			if r.Kind.Has(CmdKillOk) {
+				s.killCounter.WithLabelValues(KillLabelOk).Inc()
+			}
+			if r.Kind.Has(CmdKillFail) {
+
+				s.killCounter.WithLabelValues(KillLabelFail).Inc()
+			}
+			out <- r
+		}
+	}()
+
 	start := time.Now()
-	cmd.Run(out, quit, done, env...)
+	cmd.Run(cmdOut, quit, done, env...)
 	<-done
 	s.processDuration.Observe(time.Since(start).Seconds())
 }
 
 // CanRun returns true if the Command is allowed to run based on its fingerprint and settings
-func (s *Server) CanRun(cmd *Command, amMsg *template.Data) (bool, string) {
+func (s *Server) CanRun(cmd *Command, amMsg *template.Data) (bool, CmdRunReason) {
 	if !cmd.Matches(amMsg) {
-		return false, "no match for alert labels"
+		return false, CmdRunNoLabelMatch
 	}
 
 	if cmd.Max <= 0 {
-		return true, "No maximum simultaneous command limit defined"
+		return true, CmdRunNoMax
 	}
 
 	fingerprint, ok := cmd.Fingerprint(amMsg)
 	if !ok || fingerprint == "" {
-		return true, "No fingerprint found for command"
+		return true, CmdRunNoFinger
 	}
 
 	v, ok := s.fingerCount.Get(fingerprint)
 	if !ok || v < cmd.Max {
-		return true, "Command count for fingerprint is under limit"
+		return true, CmdRunFingerUnder
 	}
 
-	return false, "Command count for fingerprint is over limit"
+	return false, CmdRunFingerOver
 }
 
 // Start runs a golang http server with the given routes.
@@ -307,6 +438,14 @@ func (s *Server) Start() (*http.Server, chan error) {
 	s.registry.MustRegister(s.processDuration)
 	s.registry.MustRegister(s.processCurrent)
 	s.registry.MustRegister(s.errCounter)
+	s.registry.MustRegister(s.killCounter)
+	s.registry.MustRegister(s.skipCounter)
+
+	// Initialize metrics
+	err := s.initMetrics()
+	if err != nil {
+		panic(err)
+	}
 
 	// We use our own instance of ServeMux instead of DefaultServeMux,
 	// to keep handler registration separate between server instances.
@@ -314,11 +453,17 @@ func (s *Server) Start() (*http.Server, chan error) {
 	srv := &http.Server{Addr: s.config.ListenAddr, Handler: mux}
 	mux.HandleFunc("/", s.handleWebhook)
 	mux.HandleFunc("/_health", handleHealth)
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{
+		// Prometheus can use the same logger we are, when printing errors about serving metrics
+		ErrorLog: log.New(os.Stderr, "", log.LstdFlags),
+		// Include metric handler errors in metrics output
+		Registry: s.registry,
+	}))
 
 	// Start http server in a goroutine, so that it doesn't block other activities
 	var httpSrvResult = make(chan error, 1)
 	go func() {
+		defer close(httpSrvResult)
 		commands := make([]string, len(s.config.Commands))
 		for i, e := range s.config.Commands {
 			commands[i] = e.String()
@@ -350,6 +495,8 @@ func NewServer(config *Config) *Server {
 		processDuration: prometheus.NewHistogram(procDurationOpts),
 		processCurrent:  prometheus.NewGauge(procCurrentOpts),
 		errCounter:      prometheus.NewCounterVec(errCountOpts, errCountLabels),
+		killCounter:     prometheus.NewCounterVec(killCountOpts, killCountLabels),
+		skipCounter:     prometheus.NewCounterVec(skipCountOpts, skipCountLabels),
 	}
 
 	return &s
