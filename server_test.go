@@ -201,63 +201,60 @@ func Test_handleHealth(t *testing.T) {
 	}
 }
 
-func TestServer_handleWebhook(t *testing.T) {
+func Test_handleWebhook(t *testing.T) {
 	if runtime.GOOS == "aix" || runtime.GOOS == "android" || runtime.GOOS == "illumos" || runtime.GOOS == "js" ||
 		runtime.GOOS == "plan9" || runtime.GOOS == "windows" {
-		t.Skip("Skip on platforms without 'false' command available")
+		t.Skip("Skip on platforms without 'false' or 'sleep' commands available")
 	}
+
+	// We can create pointers to variables, but not to primitive values like true/false directly.
+	var alsoFalse = false
 
 	payload, err := json.Marshal(&amData)
 	if err != nil {
 		t.Fatal("Failed to encode amData as JSON")
 	}
 
-	srv, err := genServer()
-	if err != nil {
-		t.Fatal("Failed to generate server")
-	}
-	httpSrv, _ := srv.Start()
-	defer func() {
-		_ = stopServer(httpSrv)
-	}()
-
-	srvWithErrCmds, err := genServer()
-	if err != nil {
-		t.Fatal("Failed to generate server")
-	}
-	httpSrvWithErrCmds, _ := srvWithErrCmds.Start()
-	defer func() {
-		_ = stopServer(httpSrvWithErrCmds)
-	}()
-
-	// We'll expect 2 errors based on these commands
-	srvWithErrCmds.config.Commands = append(srvWithErrCmds.config.Commands, &Command{Cmd: "false"})
-	srvWithErrCmds.config.Commands = append(srvWithErrCmds.config.Commands, &Command{Cmd: "false"})
-
 	cases := []struct {
 		name           string
-		server         *Server
+		commands       []*Command
 		req            *http.Request
 		w              *httptest.ResponseRecorder
 		wantStatusCode int
 		wantErrors     int
 	}{
+		// The httptest.NewRequest() call sends a request to handleWebhook
 		{
-			name:   "good",
-			server: srv,
-			// Send a request to handleWebhook
+			name:           "good",
+			commands:       []*Command{{Cmd: "echo"}},
 			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
 			w:              httptest.NewRecorder(),
 			wantStatusCode: http.StatusOK,
 			wantErrors:     0,
 		},
+		// We'll expect 2 errors based on these commands
 		{
-			name:           "cmd_errors",
-			server:         srvWithErrCmds,
+			name: "cmd_errors",
+			commands: []*Command{
+				{Cmd: "false"},
+				{Cmd: "false", Args: []string{"banana"}},
+			},
 			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
 			w:              httptest.NewRecorder(),
 			wantStatusCode: http.StatusInternalServerError,
 			wantErrors:     2,
+		},
+		// We'll expect 0 errors due to NotifyOnFailure being False
+		{
+			name: "no_error_notify",
+			commands: []*Command{
+				{Cmd: "false", NotifyOnFailure: &alsoFalse},
+				{Cmd: "false", Args: []string{"banana"}, NotifyOnFailure: &alsoFalse},
+			},
+			req:            httptest.NewRequest("GET", "/", bytes.NewReader(payload)),
+			w:              httptest.NewRecorder(),
+			wantStatusCode: http.StatusOK,
+			wantErrors:     0,
 		},
 	}
 
@@ -265,7 +262,18 @@ func TestServer_handleWebhook(t *testing.T) {
 		tc := tc // Capture range variable, for use in anonymous function
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tc.server.handleWebhook(tc.w, tc.req)
+
+			srv, err := genServer()
+			if err != nil {
+				t.Fatal("Failed to generate server")
+			}
+			httpSrv, _ := srv.Start()
+			defer func() {
+				_ = stopServer(httpSrv)
+			}()
+
+			srv.config.Commands = tc.commands
+			srv.handleWebhook(tc.w, tc.req)
 
 			// Check response of request
 			resp := tc.w.Result()
@@ -275,7 +283,7 @@ func TestServer_handleWebhook(t *testing.T) {
 
 			// Check the process duration metric
 			var pdMetric pm.Metric
-			err = tc.server.processDuration.Write(&pdMetric)
+			err = srv.processDuration.Write(&pdMetric)
 			if err != nil {
 				t.Errorf("Failed to retrieve processDuration metric from handleWebhook: %v", err)
 			}
@@ -286,7 +294,7 @@ func TestServer_handleWebhook(t *testing.T) {
 
 			// Check the process count metric
 			var pcMetric pm.Metric
-			err = tc.server.processCurrent.Write(&pcMetric)
+			err = srv.processCurrent.Write(&pcMetric)
 			if err != nil {
 				t.Errorf("Failed to retrieve processCurrent metric from handleWebhook: %v", err)
 			}
@@ -297,7 +305,7 @@ func TestServer_handleWebhook(t *testing.T) {
 
 			// Check the error metrics
 			for _, label := range []string{"read", "unmarshal", "start"} {
-				count, err := getCounterValue(tc.server.errCounter, label)
+				count, err := getCounterValue(srv.errCounter, label)
 				if err != nil {
 					t.Errorf("Failed to retrieve '%s' count from handleWebhook: %v", label, err)
 				} else if count > float64(tc.wantErrors) {
@@ -349,7 +357,7 @@ func TestServer_CanRun(t *testing.T) {
 					"owner": "me",
 				},
 			},
-			data:    &amData,
+			data:   &amData,
 			want:   false,
 			before: pass,
 			after:  pass,
@@ -365,7 +373,7 @@ func TestServer_CanRun(t *testing.T) {
 				},
 				Max: -1,
 			},
-			data: &amDataFinger,
+			data:   &amDataFinger,
 			want:   true,
 			before: boop10,
 			after:  reset,
@@ -381,7 +389,7 @@ func TestServer_CanRun(t *testing.T) {
 				},
 				Max: 2,
 			},
-			data:    &amData,
+			data:   &amData,
 			want:   true,
 			before: boop10,
 			after:  reset,
@@ -397,7 +405,7 @@ func TestServer_CanRun(t *testing.T) {
 				},
 				Max: 11,
 			},
-			data: &amDataFinger,
+			data:   &amDataFinger,
 			want:   true,
 			before: boop10,
 			after:  reset,
@@ -413,7 +421,7 @@ func TestServer_CanRun(t *testing.T) {
 				},
 				Max: 2,
 			},
-			data: &amDataFinger,
+			data:   &amDataFinger,
 			want:   false,
 			before: boop10,
 			after:  reset,
