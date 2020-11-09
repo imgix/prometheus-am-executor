@@ -19,7 +19,6 @@ build: deps
 	go build -o $(GOBIN)/prometheus-am-executor
 
 test: build
-	go test
-	./scripts/integration
+	go test -count 1 ./...
 
 all: test build
