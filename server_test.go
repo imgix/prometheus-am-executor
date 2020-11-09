@@ -355,6 +355,7 @@ func Test_handleWebhook(t *testing.T) {
 
 	cases := []struct {
 		name           string
+		verbose        bool
 		commands       []*Command
 		reqs           []*http.Request
 		statusCode     int
@@ -395,9 +396,9 @@ func Test_handleWebhook(t *testing.T) {
 		},
 		// We'll expect 0 errors due to command being killed by being resolved
 		{
-			name:       "resolved",
-			commands:   []*Command{{Cmd: "sleep", Args: []string{"4s"}}},
-			reqs:       []*http.Request{
+			name:     "resolved",
+			commands: []*Command{{Cmd: "sleep", Args: []string{"4s"}}},
+			reqs: []*http.Request{
 				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
 				httptest.NewRequest("GET", "/", bytes.NewReader(resolve)),
 			},
@@ -407,9 +408,9 @@ func Test_handleWebhook(t *testing.T) {
 		},
 		// Expect no error due to command not being killed by being resolved, because IgnoreResolved is true
 		{
-			name:           "ignore_resolved",
-			commands:       []*Command{{Cmd: "sleep", Args: []string{"4s"}, IgnoreResolved: &alsoTrue}},
-			reqs:       []*http.Request{
+			name:     "ignore_resolved",
+			commands: []*Command{{Cmd: "sleep", Args: []string{"4s"}, IgnoreResolved: &alsoTrue}},
+			reqs: []*http.Request{
 				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
 				httptest.NewRequest("GET", "/", bytes.NewReader(resolve)),
 			},
@@ -420,35 +421,65 @@ func Test_handleWebhook(t *testing.T) {
 		},
 
 		// Expect 0 skipped due to no Max
+		{
+			name:    "no_max",
+			commands: []*Command{
+				{Cmd: "sleep", Args: []string{"4s"}},
+			},
+			reqs: []*http.Request{
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+			},
+			statusCode:     http.StatusOK,
+			errors:         0,
+			killed:         0,
+			skipped:        0,
+			stillRunningOk: true,
+		},
 		// Expect 1 skipped due to Max being exceeded
+		{
+			name:    "max",
+			commands: []*Command{
+				{Cmd: "sleep", Args: []string{"4s"}, Max: 1},
+			},
+			reqs: []*http.Request{
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+				httptest.NewRequest("GET", "/", bytes.NewReader(trigger)),
+			},
+			statusCode:     http.StatusOK,
+			errors:         0,
+			killed:         0,
+			skipped:        2,
+			stillRunningOk: true,
+		},
 	}
 
 	for _, tc := range cases {
 		tc := tc // Capture range variable, for use in anonymous function
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if tc.name != "resolved" {
-				return // TODO
-			}
 
 			srv, err := genServer()
 			if err != nil {
 				t.Fatal("Failed to generate server")
 			}
+
+			srv.config.Verbose = tc.verbose
+			srv.config.Commands = tc.commands
+
 			httpSrv, _ := srv.Start()
 			defer func() {
 				_ = stopServer(httpSrv)
 			}()
 
-			srv.config.Commands = tc.commands
-
 			// We'll make a second request, if it is defined
-			var req  *http.Request
+			var req *http.Request
 			var resp *http.Response
 			for i, r := range tc.reqs {
 				req = r
 				w := httptest.NewRecorder()
-				if len(tc.reqs) > 1 && i != len(tc.reqs) - 1 {
+				if len(tc.reqs) > 1 && i != len(tc.reqs)-1 {
 					// If we're not the last command, we just issue the request and keep going
 					go srv.handleWebhook(w, req)
 					// Give some time for effects of request to take place (process starting, being killed, etc)
