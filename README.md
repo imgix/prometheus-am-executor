@@ -97,7 +97,7 @@ commands:
 |`cmd`|The name or path to the command you want to execute.|
 |`args`|Optional arguments that you want to pass to the command|
 |`match_labels`|What alert labels you'd like to use, to determine if the command should be executed. **All** specified labels must match in order for the command to be executed. If `match_labels` isn't specified, the command will be executed for _all_ alerts.|
-|`notify_on_failure`|By default if any executed command returns a non-zero exit code, the caller (alertmanager) is notified with an HTTP 500 request. This will likely result in alertmanager considering the message a 'failure to notify' and re-sends the alert to am-executor. If this is not desired behaviour, set `nofity_on_failure` to `false`.|
+|`notify_on_failure`|By default if any executed command returns a non-zero exit code, the caller (alertmanager) is notified with an HTTP 500 status code in the response. This will likely result in alertmanager considering the message a 'failure to notify' and re-sends the alert to am-executor. If this is not desired behaviour, set `nofity_on_failure` to `false`.|
 |`max`|The maximum instances of this command that can be running at the same time. A zero or negative value is interpreted as 'no limit'.|
 |`ignore_resolved`|By default when an alertmanager message indicating the alerts are 'resolved' is received, any commands matching the alarm are killed if they are still active. If this is not desired behaviour, set this to `true`.|
 
