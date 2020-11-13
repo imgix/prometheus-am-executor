@@ -23,6 +23,8 @@ git clone https://github.com/imgix/prometheus-am-executor.git
 #### 2. Compile the `prometheus-am-executor` binary
 
 ```
+go test -count 1 -v ./...
+
 go build
 ```
 
@@ -69,15 +71,20 @@ An [example config file](examples/executor.yml) is provided in the examples dire
 
 ```yaml
 ---
-listen_address: ":8080"
+listen_address: ":23222"
 verbose: false
+# tls_key: "certs/key.pem"
+# tls_crt: "certs/cert.pem"
 commands:
   - cmd: echo
     args: ["banana", "tomato"]
     match_labels:
       "env": "testing"
       "owner": "me"
+    notify_on_failure: false
   - cmd: /bin/true
+    max: 3
+    ignore_resolved: true
 ```
 
 |Parameter|Use|
@@ -90,10 +97,13 @@ commands:
 |`cmd`|The name or path to the command you want to execute.|
 |`args`|Optional arguments that you want to pass to the command|
 |`match_labels`|What alert labels you'd like to use, to determine if the command should be executed. **All** specified labels must match in order for the command to be executed. If `match_labels` isn't specified, the command will be executed for _all_ alerts.|
+|`notify_on_failure`|By default if any executed command returns a non-zero exit code, the caller (alertmanager) is notified with an HTTP 500 status code in the response. This will likely result in alertmanager considering the message a 'failure to notify' and re-sends the alert to am-executor. If this is not desired behaviour, set `nofity_on_failure` to `false`.|
+|`max`|The maximum instances of this command that can be running at the same time. A zero or negative value is interpreted as 'no limit'.|
+|`ignore_resolved`|By default when an alertmanager message indicating the alerts are 'resolved' is received, any commands matching the alarm are killed if they are still active. If this is not desired behaviour, set this to `true`.|
 
 In the above configuration example, `/bin/true` will be executed for all alerts, and `echo` will be executed when an alert has the labels `env="testing"` and `owner="me"`.
 
-#### Create TLS Certificates
+##### Creating TLS Certificates
 
 With the following command can you create a TLS key and certificate for testing purposes.
 
@@ -146,7 +156,7 @@ increased in the last 15 minutes and there are at least 80% of all servers for
 backend `app` up.
 
 Now the alert needs to get routed to prometheus-am-executor like in this 
-[alertmanager config](examples/alertmanager.conf) example.
+[alertmanager config](examples/alertmanager.yml) example.
 
 Finally prometheus-am-executor needs to be pointed to a reboot script:
 
