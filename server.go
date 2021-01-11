@@ -35,8 +35,8 @@ const (
 	ErrLabelRead       = "read"
 	ErrLabelUnmarshall = "unmarshal"
 	ErrLabelStart      = "start"
-	KillLabelOk        = "ok"
-	KillLabelFail      = "fail"
+	SigLabelOk         = "ok"
+	SigLabelFail       = "fail"
 )
 
 var (
@@ -79,11 +79,11 @@ var (
 		Help:      "Total number of errors while processing alerts.",
 	}
 
-	killCountOpts = prometheus.CounterOpts{
+	sigCountOpts = prometheus.CounterOpts{
 		Namespace: metricNamespace,
-		Subsystem: "killed",
+		Subsystem: "signalled",
 		Name:      "total",
-		Help:      "Total number of active processes killed due to alarm resolving.",
+		Help:      "Total number of active processes signalled due to alarm resolving.",
 	}
 
 	skipCountOpts = prometheus.CounterOpts{
@@ -94,7 +94,7 @@ var (
 	}
 
 	errCountLabels  = []string{"stage"}
-	killCountLabels = []string{"result"}
+	sigCountLabels  = []string{"result"}
 	skipCountLabels = []string{"reason"}
 )
 
@@ -104,7 +104,7 @@ type Server struct {
 	config *Config
 	// A mapping of an alarm fingerprint to a channel that can be used to
 	// trigger action on all executing commands matching that fingerprint.
-	// In our case, we want the ability to kill a running process if the matching channel is closed.
+	// In our case, we want the ability to signal a running process if the matching channel is closed.
 	// Alarms without a fingerprint aren't tracked by the map.
 	tellFingers *chanmap.ChannelMap
 	// A mapping of an alarm fingerprint to the number of commands being executed for it.
@@ -116,8 +116,8 @@ type Server struct {
 	processDuration prometheus.Histogram
 	processCurrent  prometheus.Gauge
 	errCounter      *prometheus.CounterVec
-	// Track number of active processes killed due to a 'resolved' message being received from alertmanager.
-	killCounter *prometheus.CounterVec
+	// Track number of active processes signalled due to a 'resolved' message being received from alertmanager.
+	sigCounter *prometheus.CounterVec
 	// Track number of commands skipped instead of run.
 	skipCounter *prometheus.CounterVec
 }
@@ -233,12 +233,13 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 		}
 	}()
 
+	// collect error messages returned by running the command
 	var collect = func(f future) {
 		defer collectWg.Done()
 		var resultState Result
 		for result := range f.out {
 			resultState = resultState | result.Kind
-			// We don't consider errors from CmdKillOk or CmdKillFail states, as
+			// We don't consider errors from CmdSigOk or CmdSigFail states, as
 			// conditions that should be passed back to the caller.
 			if result.Kind.Has(CmdFail) && result.Err != nil && f.cmd.ShouldNotify() {
 				errors <- result.Err
@@ -267,6 +268,7 @@ func (s *Server) amFiring(amMsg *template.Data) []error {
 		out := make(chan CommandResult)
 		collectWg.Add(1)
 		go collect(future{cmd: cmd, out: out})
+		// s.instrument() runs the command and updates related metrics
 		go s.instrument(fingerprint, cmd, env, out)
 	}
 
@@ -323,7 +325,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	case "firing":
 		errors = s.amFiring(amMsg)
 	case "resolved":
-		// When an alert is resolved, we will attempt to kill any active commands
+		// When an alert is resolved, we will attempt to signal any active commands
 		// that were dispatched on behalf of it, by matching commands against fingerprints
 		// used to run them.
 		s.amResolved(amMsg)
@@ -352,9 +354,9 @@ func (s *Server) initMetrics() error {
 	_ = s.errCounter.WithLabelValues(ErrLabelRead)
 	_ = s.errCounter.WithLabelValues(ErrLabelUnmarshall)
 	_ = s.errCounter.WithLabelValues(ErrLabelStart)
-	_ = s.killCounter.WithLabelValues(ErrLabelStart)
-	_ = s.killCounter.WithLabelValues(KillLabelOk)
-	_ = s.killCounter.WithLabelValues(KillLabelFail)
+	_ = s.sigCounter.WithLabelValues(ErrLabelStart)
+	_ = s.sigCounter.WithLabelValues(SigLabelOk)
+	_ = s.sigCounter.WithLabelValues(SigLabelFail)
 	_ = s.skipCounter.WithLabelValues(CmdRunNoLabelMatch.Label())
 	_ = s.skipCounter.WithLabelValues(CmdRunFingerOver.Label())
 
@@ -390,12 +392,11 @@ func (s *Server) instrument(fingerprint string, cmd *Command, env []string, out 
 			if r.Kind.Has(CmdFail) && r.Err != nil && cmd.ShouldNotify() {
 				s.errCounter.WithLabelValues(ErrLabelStart).Inc()
 			}
-			if r.Kind.Has(CmdKillOk) {
-				s.killCounter.WithLabelValues(KillLabelOk).Inc()
+			if r.Kind.Has(CmdSigOk) {
+				s.sigCounter.WithLabelValues(SigLabelOk).Inc()
 			}
-			if r.Kind.Has(CmdKillFail) {
-
-				s.killCounter.WithLabelValues(KillLabelFail).Inc()
+			if r.Kind.Has(CmdSigFail) {
+				s.sigCounter.WithLabelValues(SigLabelFail).Inc()
 			}
 			out <- r
 		}
@@ -438,7 +439,7 @@ func (s *Server) Start() (*http.Server, chan error) {
 	s.registry.MustRegister(s.processDuration)
 	s.registry.MustRegister(s.processCurrent)
 	s.registry.MustRegister(s.errCounter)
-	s.registry.MustRegister(s.killCounter)
+	s.registry.MustRegister(s.sigCounter)
 	s.registry.MustRegister(s.skipCounter)
 
 	// Initialize metrics
@@ -495,7 +496,7 @@ func NewServer(config *Config) *Server {
 		processDuration: prometheus.NewHistogram(procDurationOpts),
 		processCurrent:  prometheus.NewGauge(procCurrentOpts),
 		errCounter:      prometheus.NewCounterVec(errCountOpts, errCountLabels),
-		killCounter:     prometheus.NewCounterVec(killCountOpts, killCountLabels),
+		sigCounter:      prometheus.NewCounterVec(sigCountOpts, sigCountLabels),
 		skipCounter:     prometheus.NewCounterVec(skipCountOpts, skipCountLabels),
 	}
 

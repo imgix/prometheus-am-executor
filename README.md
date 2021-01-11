@@ -85,6 +85,9 @@ commands:
   - cmd: /bin/true
     max: 3
     ignore_resolved: true
+  - cmd: /bin/sleep
+    args: ["10s"]
+    resolved_signal: SIGUSR1
 ```
 
 |Parameter|Use|
@@ -99,9 +102,13 @@ commands:
 |`match_labels`|What alert labels you'd like to use, to determine if the command should be executed. **All** specified labels must match in order for the command to be executed. If `match_labels` isn't specified, the command will be executed for _all_ alerts.|
 |`notify_on_failure`|By default if any executed command returns a non-zero exit code, the caller (alertmanager) is notified with an HTTP 500 status code in the response. This will likely result in alertmanager considering the message a 'failure to notify' and re-sends the alert to am-executor. If this is not desired behaviour, set `nofity_on_failure` to `false`.|
 |`max`|The maximum instances of this command that can be running at the same time. A zero or negative value is interpreted as 'no limit'.|
-|`ignore_resolved`|By default when an alertmanager message indicating the alerts are 'resolved' is received, any commands matching the alarm are killed if they are still active. If this is not desired behaviour, set this to `true`.|
+|`ignore_resolved`|By default when an alertmanager message indicating the alerts are 'resolved' is received, any commands matching the alarm are sent a signal if they are still active. If this is not desired behaviour, set this to `true`.|
+|`resolved_signal`|Specify which signal to send to matching commands that are still running when the triggering alert is resolved. (default: SIGKILL)|
 
-In the above configuration example, `/bin/true` will be executed for all alerts, and `echo` will be executed when an alert has the labels `env="testing"` and `owner="me"`.
+In the above configuration example:
+* `echo` will be executed when an alert has the labels `env="testing"` and `owner="me"`, receives SIGKILL if triggering alarm resolves while it's still running. If the command fails, the source of the alert isn't notified.
+* `/bin/true` will be executed for all alerts, and doesn't receive a signal if triggering alarm resolves while running.
+* `/bin/sleep` is executed for all alerts, and receives SIGUSR1 signal if triggering alarm resolves while still running.
 
 ##### Creating TLS Certificates
 

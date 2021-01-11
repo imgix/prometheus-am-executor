@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -341,6 +342,65 @@ func TestCommand_Matches(t *testing.T) {
 	}
 }
 
+func TestCommand_ParseSignal(t *testing.T) {
+	cases := []struct {
+		name    string
+		cmd     Command
+		sig     os.Signal
+		wantErr bool
+	}{
+		{
+			name:    "default",
+			cmd:     Command{},
+			sig:     os.Kill,
+			wantErr: false,
+		},
+		{
+			name:    "signum",
+			cmd:     Command{ResolvedSig: "10999"},
+			sig:     os.Signal(syscall.Signal(10999)),
+			wantErr: false,
+		},
+		{
+			name:    "invalid_signame",
+			cmd:     Command{ResolvedSig: "banana"},
+			sig:     os.Signal(syscall.Signal(-1)),
+			wantErr: true,
+		},
+		{
+			name:    "signame_lower",
+			cmd:     Command{ResolvedSig: "sigusr2"},
+			sig:     syscall.SIGUSR2,
+			wantErr: false,
+		},
+		{
+			name:    "signame_upper",
+			cmd:     Command{ResolvedSig: "SIGSTOP"},
+			sig:     syscall.SIGSTOP,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc // Capture range variable, for use in anonymous function
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sig, err := tc.cmd.ParseSignal()
+			if (err != nil) != tc.wantErr {
+				if tc.wantErr {
+					t.Errorf("Missing error when one was expected; got %v", err)
+				} else {
+					t.Errorf("Got unexpected error: %v", err)
+				}
+			}
+			if sig != tc.sig {
+				t.Errorf("Wrong signal value; got %s, want %s", sig, tc.sig)
+			}
+		})
+	}
+}
+
 func TestCommand_Run(t *testing.T) {
 	t.Skip("TODO")
 }
@@ -430,6 +490,7 @@ func TestCommand_ShouldNotify(t *testing.T) {
 }
 
 func TestCommand_String(t *testing.T) {
+	t.Parallel()
 	cmdNoArgs := Command{Cmd: "echo"}
 	if cmdNoArgs.String() != "echo" {
 		t.Errorf("wrong command string; got '%s', want '%s'", cmdNoArgs, "echo")
@@ -442,6 +503,7 @@ func TestCommand_String(t *testing.T) {
 }
 
 func TestCommand_WithEnv(t *testing.T) {
+	t.Parallel()
 	env := []string{"BANANAS=3", "PRIORITY=TOP"}
 	cmd := Command{Cmd: "echo"}.WithEnv(env...)
 
@@ -455,5 +517,66 @@ func TestCommand_WithEnv(t *testing.T) {
 		if !containsString(v, cmd.Env) {
 			t.Errorf("missing extra env var %s", v)
 		}
+	}
+}
+
+func TestIsDigit(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{
+			name: "digits",
+			in:   "000103",
+			want: true,
+		},
+		{
+			name: "decimal",
+			in:   "3.14",
+			want: false,
+		},
+		{
+			name: "negative",
+			in:   "-1",
+			want: false,
+		},
+		{
+			name: "positive",
+			in:   "+9",
+			want: false,
+		},
+		{
+			name: "alpha",
+			in:   "123a5",
+			want: false,
+		},
+		{
+			name: "empty",
+			in:   "",
+			want: false,
+		},
+		{
+			name: "space",
+			in:   "123 45",
+			want: false,
+		},
+		{
+			name: "separator",
+			in:   "11,000",
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc // Capture range variable, for use in anonymous function scope
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := IsDigit(tc.in)
+			if got != tc.want {
+				t.Errorf("Wrong result; got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

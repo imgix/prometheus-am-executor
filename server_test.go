@@ -297,8 +297,8 @@ func Test_handleMetrics(t *testing.T) {
 			errCountOpts.Name}, sep): false,
 		strings.Join([]string{
 			metricNamespace,
-			killCountOpts.Subsystem,
-			killCountOpts.Name}, sep): false,
+			sigCountOpts.Subsystem,
+			sigCountOpts.Name}, sep): false,
 		strings.Join([]string{
 			metricNamespace,
 			skipCountOpts.Subsystem,
@@ -360,7 +360,7 @@ func Test_handleWebhook(t *testing.T) {
 		reqs           []*http.Request
 		statusCode     int
 		errors         int
-		killed         int
+		signalled      int
 		skipped        int
 		stillRunningOk bool
 	}{
@@ -404,7 +404,7 @@ func Test_handleWebhook(t *testing.T) {
 			},
 			statusCode: http.StatusOK,
 			errors:     0,
-			killed:     1,
+			signalled:  1,
 		},
 		// Expect no error due to command not being killed by being resolved, because IgnoreResolved is true
 		{
@@ -416,13 +416,13 @@ func Test_handleWebhook(t *testing.T) {
 			},
 			statusCode:     http.StatusOK,
 			errors:         0,
-			killed:         0,
+			signalled:      0,
 			stillRunningOk: true,
 		},
 
 		// Expect 0 skipped due to no Max
 		{
-			name:    "no_max",
+			name: "no_max",
 			commands: []*Command{
 				{Cmd: "sleep", Args: []string{"4s"}},
 			},
@@ -432,13 +432,13 @@ func Test_handleWebhook(t *testing.T) {
 			},
 			statusCode:     http.StatusOK,
 			errors:         0,
-			killed:         0,
+			signalled:      0,
 			skipped:        0,
 			stillRunningOk: true,
 		},
 		// Expect 1 skipped due to Max being exceeded
 		{
-			name:    "max",
+			name: "max",
 			commands: []*Command{
 				{Cmd: "sleep", Args: []string{"4s"}, Max: 1},
 			},
@@ -449,7 +449,7 @@ func Test_handleWebhook(t *testing.T) {
 			},
 			statusCode:     http.StatusOK,
 			errors:         0,
-			killed:         0,
+			signalled:      0,
 			skipped:        2,
 			stillRunningOk: true,
 		},
@@ -521,17 +521,17 @@ func Test_handleWebhook(t *testing.T) {
 			// Check the error metrics
 			count, err := getCounterValue(srv.errCounter, ErrLabelStart)
 			if err != nil {
-				t.Fatalf("Failed to retrieve '%s' error count: %v", ErrLabelStart, err)
+				t.Fatalf("Failed to retrieve %q error count: %v", ErrLabelStart, err)
 			} else if count != float64(tc.errors) {
-				t.Errorf("Wrong error count for '%s'; got %f, want %d", ErrLabelStart, count, tc.errors)
+				t.Errorf("Wrong error count for %q; got %f, want %d", ErrLabelStart, count, tc.errors)
 			}
 
-			// Check killed metrics
-			count, err = getCounterValue(srv.killCounter, KillLabelOk)
+			// Check signalled metrics
+			count, err = getCounterValue(srv.sigCounter, SigLabelOk)
 			if err != nil {
-				t.Fatalf("Failed to retrieve '%s' kill count: %v", "ok", err)
-			} else if count != float64(tc.killed) {
-				t.Errorf("Wrong kill count for '%s'; got %f, want %d", "ok", count, tc.killed)
+				t.Fatalf("Failed to retrieve %q signalled count: %v", "ok", err)
+			} else if count != float64(tc.signalled) {
+				t.Errorf("Wrong signalled count for %q; got %f, want %d", "ok", count, tc.signalled)
 			}
 
 			// Check skipped metrics
@@ -544,7 +544,7 @@ func Test_handleWebhook(t *testing.T) {
 			for _, label := range skipLabels {
 				count, err := getCounterValue(srv.skipCounter, label)
 				if err != nil {
-					t.Fatalf("Failed to retrieve '%s' skip count: %v", label, err)
+					t.Fatalf("Failed to retrieve %q skip count: %v", label, err)
 				}
 				skipped += count
 			}

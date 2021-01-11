@@ -98,6 +98,7 @@ commands:
       "env": "testing"
       "owner": "me"
     notify_on_failure: false
+    resolved_signal: sigusr2
   - cmd: /bin/true
     match_labels:
       "beep": "boop"
@@ -147,6 +148,7 @@ commands:
 					"owner": "me",
 				},
 				NotifyOnFailure: &alsoFalse,
+				ResolvedSig:     "sigusr2",
 			},
 			shouldNotify:         false,
 			shouldIgnoreResolved: false,
@@ -166,13 +168,20 @@ commands:
 
 	for i, tc := range cases {
 		if !c.Commands[i].Equal(tc.cmd) {
-			t.Errorf("Commands not equal; '%s' and '%s'", c.Commands[i], tc.cmd.String())
+			t.Errorf("Commands not equal; %q and %q", c.Commands[i], tc.cmd.String())
 		}
 		if c.Commands[i].ShouldNotify() != tc.shouldNotify {
-			t.Errorf("Wrong NotifyOnFailure value for '%s'; got %v, want %v", c.Commands[i].String(), c.Commands[i].ShouldNotify(), tc.shouldNotify)
+			t.Errorf("Wrong NotifyOnFailure value for %q; got %v, want %v", c.Commands[i].String(), c.Commands[i].ShouldNotify(), tc.shouldNotify)
 		}
 		if c.Commands[i].ShouldIgnoreResolved() != tc.shouldIgnoreResolved {
-			t.Errorf("Wrong IgnoreResolved value for '%s'; got %v, want %v", c.Commands[i].String(), c.Commands[i].ShouldIgnoreResolved(), tc.shouldIgnoreResolved)
+			t.Errorf("Wrong IgnoreResolved value for %q; got %v, want %v", c.Commands[i].String(), c.Commands[i].ShouldIgnoreResolved(), tc.shouldIgnoreResolved)
+		}
+		if c.Commands[i].ResolvedSig != tc.cmd.ResolvedSig {
+			t.Errorf("Wrong ResolvedSig value for %q; got %s, want %s", c.Commands[i].String(), c.Commands[i].ResolvedSig, tc.cmd.ResolvedSig)
+		}
+		_, err := c.Commands[i].ParseSignal()
+		if err != nil {
+			t.Fatalf("Failed to convert command %q ResolvedSig value %s to signal: %v", c.Commands[i].String(), c.Commands[i].ResolvedSig, err)
 		}
 	}
 }
