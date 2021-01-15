@@ -7,26 +7,67 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"unicode"
 )
 
 const (
 	// Enum mask for kinds of results
-	CmdOk       Result = 1 << iota
-	CmdFail     Result = 1 << iota
-	CmdKillOk   Result = 1 << iota
-	CmdKillFail Result = 1 << iota
-	CmdSkipKill Result = 1 << iota
+	CmdOk      Result = 1 << iota
+	CmdFail    Result = 1 << iota
+	CmdSigOk   Result = 1 << iota
+	CmdSigFail Result = 1 << iota
+	CmdSkipSig Result = 1 << iota
 )
 
 var (
 	ResultStrings = map[Result]string{
-		CmdOk:       "Ok",
-		CmdFail:     "Fail",
-		CmdKillOk:   "KillOk",
-		CmdKillFail: "KillFail",
-		CmdSkipKill: "SkipKill",
+		CmdOk:      "Ok",
+		CmdFail:    "Fail",
+		CmdSigOk:   "SigOk",
+		CmdSigFail: "SigFail",
+		CmdSkipSig: "SkipSig",
+	}
+
+	signals = map[string]syscall.Signal{
+		"SIGABRT":   syscall.SIGABRT,
+		"SIGALRM":   syscall.SIGALRM,
+		"SIGBUS":    syscall.SIGBUS,
+		"SIGCHLD":   syscall.SIGCHLD,
+		"SIGCLD":    syscall.SIGCLD,
+		"SIGCONT":   syscall.SIGCONT,
+		"SIGFPE":    syscall.SIGFPE,
+		"SIGHUP":    syscall.SIGHUP,
+		"SIGILL":    syscall.SIGILL,
+		"SIGINT":    syscall.SIGINT,
+		"SIGIO":     syscall.SIGIO,
+		"SIGIOT":    syscall.SIGIOT,
+		"SIGKILL":   syscall.SIGKILL,
+		"SIGPIPE":   syscall.SIGPIPE,
+		"SIGPOLL":   syscall.SIGPOLL,
+		"SIGPROF":   syscall.SIGPROF,
+		"SIGPWR":    syscall.SIGPWR,
+		"SIGQUIT":   syscall.SIGQUIT,
+		"SIGSEGV":   syscall.SIGSEGV,
+		"SIGSTKFLT": syscall.SIGSTKFLT,
+		"SIGSTOP":   syscall.SIGSTOP,
+		"SIGSYS":    syscall.SIGSYS,
+		"SIGTERM":   syscall.SIGTERM,
+		"SIGTRAP":   syscall.SIGTRAP,
+		"SIGTSTP":   syscall.SIGTSTP,
+		"SIGTTIN":   syscall.SIGTTIN,
+		"SIGTTOU":   syscall.SIGTTOU,
+		"SIGUNUSED": syscall.SIGUNUSED,
+		"SIGURG":    syscall.SIGURG,
+		"SIGUSR1":   syscall.SIGUSR1,
+		"SIGUSR2":   syscall.SIGUSR2,
+		"SIGVTALRM": syscall.SIGVTALRM,
+		"SIGWINCH":  syscall.SIGWINCH,
+		"SIGXCPU":   syscall.SIGXCPU,
+		"SIGXFSZ":   syscall.SIGXFSZ,
 	}
 )
 
@@ -56,7 +97,8 @@ type Command struct {
 	// Whether command will ignore a 'resolved' notification for a matching command,
 	// and continue running to completion.
 	// Defaults to false.
-	IgnoreResolved *bool `yaml:"ignore_resolved,omitempty"`
+	IgnoreResolved *bool  `yaml:"ignore_resolved,omitempty"`
+	ResolvedSig    string `yaml:"resolved_signal"`
 }
 
 // Return a string representing the result state
@@ -164,7 +206,7 @@ func (c Command) Matches(msg *template.Data) bool {
 	return true
 }
 
-// Run executes the command, killing it if asked to quit early
+// Run executes the command, potentially signalling it if alarm that triggered command resolves.
 // out channel is used to indicate the result of running or killing the program. May indicate errors.
 // quit channel is used to determine if execution should quit early
 // done channel is used to indicate to caller when execution has completed
@@ -174,8 +216,8 @@ func (c Command) Run(out chan<- CommandResult, quit chan struct{}, done chan str
 	var wg sync.WaitGroup
 	cmd := c.WithEnv(env...)
 	// We use a buffer of one, so that if the command is killed before it finishes,
-	// We will still be able to close the channel, and end the Command.Run method;
-	// There won't be a reader left, because the select statement ended when quit was read from.
+	// we will still be able to close the channel and end the Command.Run method;
+	// There won't be a channel reader left, because the select statement ended when quit was read from.
 	cmdOut := make(chan CommandResult, 1)
 	wg.Add(1)
 	go func() {
@@ -194,14 +236,19 @@ func (c Command) Run(out chan<- CommandResult, quit chan struct{}, done chan str
 		out <- r
 	case <-quit:
 		if c.ShouldIgnoreResolved() {
-			out <- CommandResult{Kind: CmdSkipKill, Err: nil}
+			out <- CommandResult{Kind: CmdSkipSig, Err: nil}
 		} else {
-			err := cmd.Process.Kill()
+			sig, err := c.ParseSignal()
+			if err != nil {
+				errMsg := fmt.Errorf("Can't use signal %s to notify pid %d for command %s: %w", c.ResolvedSig, cmd.Process.Pid, c, err)
+				out <- CommandResult{Kind: CmdSigFail, Err: errMsg}
+			}
+			err = cmd.Process.Signal(sig)
 			if err == nil {
-				out <- CommandResult{Kind: CmdKillOk, Err: nil}
+				out <- CommandResult{Kind: CmdSigOk, Err: nil}
 			} else {
-				errMsg := fmt.Errorf("Failed to kill pid %d for command %s: %w", cmd.Process.Pid, c, err)
-				out <- CommandResult{Kind: CmdKillFail, Err: errMsg}
+				errMsg := fmt.Errorf("Failed sending %s to pid %d for command %s: %w", sig, cmd.Process.Pid, c, err)
+				out <- CommandResult{Kind: CmdSigFail, Err: errMsg}
 			}
 		}
 	}
@@ -230,6 +277,31 @@ func (c Command) ShouldNotify() bool {
 	return *c.NotifyOnFailure
 }
 
+// ParseSignal returns the signal that is meant to be used for notifying the command that its triggering condition has resolved,
+// and any error encountered while parsing.
+func (c Command) ParseSignal() (os.Signal, error) {
+	if len(c.ResolvedSig) == 0 {
+		return os.Kill, nil
+	}
+
+	var notFound = os.Signal(syscall.Signal(-1))
+	if IsDigit(c.ResolvedSig) {
+		n, err := strconv.Atoi(c.ResolvedSig)
+		if err != nil {
+			return notFound, err
+		}
+		return os.Signal(syscall.Signal(n)), nil
+	}
+
+	want := strings.ToUpper(c.ResolvedSig)
+	sig, ok := signals[strings.ToUpper(c.ResolvedSig)]
+	if !ok {
+		return notFound, fmt.Errorf("Unknown signal %s", want)
+	}
+
+	return sig, nil
+}
+
 // String returns a string representation of the command
 func (c Command) String() string {
 	if len(c.Args) == 0 {
@@ -248,4 +320,19 @@ func (c Command) WithEnv(env ...string) *exec.Cmd {
 	cmd.Stderr = lw
 
 	return cmd
+}
+
+// IsDigit returns true if all of the string consists of digits
+func IsDigit(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	val := []rune(s)
+	var count = 0
+	for _, r := range val {
+		if unicode.IsDigit(r) {
+			count++
+		}
+	}
+	return count == len(val)
 }

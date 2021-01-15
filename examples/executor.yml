@@ -16,10 +16,13 @@ commands:
     # Set to false to prevent non-zero exit codes from this command, from notifying alertmanager that the command failed.
     # Notifying alertmanager (HTTP 500) is likely to re-dispatch the alarm back to am-executor.
     notify_on_failure: false
+    # Send a SIGUSR1 signal to the process if it's still running when the triggering alert resolves.
+    # Default signal when not specified is SIGKILL.
+    resolved_signal: SIGUSR1
   # This command matches every alert
   - cmd: /bin/true
     # Maximum instances of this command that can be running at the same time.
     max: 3
-    # Don't interrupt command if a matching 'resolved' message is
+    # Don't signal command if a matching 'resolved' message is
     # sent from alertmanager while this command is still running.
     ignore_resolved: true

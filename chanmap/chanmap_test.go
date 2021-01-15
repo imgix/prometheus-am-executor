@@ -19,7 +19,7 @@ func TestChannel_Close(t *testing.T) {
 		t.Errorf("missing channel for key '%s'", testKey)
 	}
 
-	go func() {c.ch <- struct{}{}}()
+	go func() { c.ch <- struct{}{} }()
 	_, ok = <-c.ch
 	if !ok {
 		t.Errorf("channel is closed when it should be open for key '%s'", testKey)
@@ -64,7 +64,7 @@ func TestChannelMap_Close(t *testing.T) {
 		t.Errorf("missing channel for key '%s'", testKey)
 	}
 
-	go func() {c.ch <- struct{}{}}()
+	go func() { c.ch <- struct{}{} }()
 	_, ok = <-c.ch
 	if !ok {
 		t.Errorf("channel is closed when it should be open for key '%s'", testKey)
