@@ -96,15 +96,17 @@ func readCli() (*Config, error) {
 		}
 	}
 
-	// Check that the commands specify resolved_signal values that we can parse
-	for i, cmd := range file.Commands {
-		_, err := cmd.ParseSignal()
-		if err != nil {
-			return nil, fmt.Errorf("Invalid resolved_signal specified for command %q at index %d: %w", cmd, i, err)
-		}
+	if file != nil {
+		// Check that the commands specify resolved_signal values that we can parse
+		for i, cmd := range file.Commands {
+			_, err := cmd.ParseSignal()
+			if err != nil {
+				return nil, fmt.Errorf("Invalid resolved_signal specified for command %q at index %d: %w", cmd, i, err)
+			}
 
-		if cmd.IgnoreResolved != nil && *cmd.IgnoreResolved {
-			log.Printf("Warning: command %q at index %d specifies a resolved_signal, and also specifies to ignore resolved alert. The signal won't be used.", cmd, i)
+			if cmd.IgnoreResolved != nil && *cmd.IgnoreResolved {
+				log.Printf("Warning: command %q at index %d specifies a resolved_signal, and also specifies to ignore resolved alert. The signal won't be used.", cmd, i)
+			}
 		}
 	}
 
