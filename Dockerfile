@@ -5,4 +5,4 @@ RUN go build
 
 FROM docker.io/s390x/ubuntu:devel
 COPY --from=builder /go/src/github.com/imgix/prometheus-am-executor/prometheus-am-executor /usr/bin/
-ENTRYPOINT ["/usr/bin/operator", "-f", "examples/executor.yml"]
+ENTRYPOINT ["/usr/bin/prometheus-am-executor-operator", "-f", "examples/executor.yml"]
